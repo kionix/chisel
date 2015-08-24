@@ -23,7 +23,8 @@ public:
     vpiHandle syscall_handle = vpi_handle(vpiSysTfCall, NULL);
     vpiHandle arg_iter = vpi_iterate(vpiArgument, syscall_handle);
     // Cache Resets
-    while (vpiHandle arg_handle = vpi_scan(arg_iter)) {
+    vpiHandle arg_handle;
+    while (arg_iter && (arg_handle = vpi_scan(arg_iter))) {
       sim_data.resets.push_back(arg_handle);
     }
   }
@@ -185,13 +186,17 @@ private:
 
       // Find DFF
       if (!wire || wirepath == modname) {
+#if defined(vpiPrimitive)
         vpiHandle udp_iter = vpi_iterate(vpiPrimitive, mod_handle);
         while (vpiHandle udp_handle = vpi_scan(udp_iter)) {
-          if (vpi_get(vpiPrimType, udp_handle) == vpiSeqPrim) {
-            id = add_signal(udp_handle, modname);
-            break;
+           if (vpi_get(vpiPrimType, udp_handle) == vpiSeqPrim) {
+             id = add_signal(udp_handle, modname);
+             break;
           }
         }
+#else
+        std::cout << z"possible DFF primitive in module but simulator hast no support" << std::endl;
+#endif
       }
       if (id > 0) break;
 

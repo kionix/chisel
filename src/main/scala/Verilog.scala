@@ -29,6 +29,9 @@
 */
 
 package Chisel
+
+import java.io.PrintWriter
+
 import scala.collection.mutable.{ArrayBuffer, HashSet, HashMap, LinkedHashMap}
 import scala.collection.immutable.ListSet
 
@@ -713,16 +716,56 @@ class VerilogBackend extends Backend {
   }
 
   override def compile(c: Module, flags: Option[String]) {
+    def iverilogVpi (dir: String, name: String, flags: String = "") {
+      val cmd = List("cd", dir, "&&", "iverilog-vpi", "vpi.cpp").mkString(" ")
+      println(s"running $cmd")
+      if (!run(cmd)) throwException("failed to run iverilog-vpi for " + name + ".cpp")
+    }
+
+    def iverilogCompile (dir: String, name: String, srcs: List[String], flags: String = "") {
+      val vvpName = name + ".vvp"
+      val cmd = List("cd", dir, "&&" ,"iverilog", "-mvpi", s"-o$vvpName", "-tvvp", flags,  srcs mkString " " ).mkString(" ")
+      println(s"running $cmd")
+      if (!run(cmd)) throwException("failed to run iverilog-vpi for " + name)
+      val vvpFile = scala.io.Source.fromFile(dir + vvpName)
+
+      val exeName = dir + "/" + name
+      val exe = new PrintWriter(exeName)
+      exe.println(s"#! /usr/local/bin/vvp -M./$dir")
+      vvpFile.getLines().drop(1).foreach(exe.println(_))
+      exe.close()
+      new java.io.File(exeName).setExecutable(true)
+    }
+
     val n = Driver.appendString(Some(c.name),Driver.chiselConfigClassName)
     val dir = Driver.targetDir + "/"
-    val ccFlags = List("-I$VCS_HOME/include", "-I" + dir, "-fPIC", "-std=c++11") mkString " "
-    val vcsFlags = List("-full64", "-quiet", "-timescale=1ns/1ps", "-debug_pp", "-Mdir=" + n + ".csrc", 
-     "+v2k", "+vpi", "+define+CLOCK_PERIOD=1", "+vcs+initreg+random") mkString " "
-    val vcsSrcs = List(n + ".v", n + "-harness.v") mkString " "
-    val cmd = List("cd", dir, "&&", "vcs", vcsFlags, "-use_vpiobj", "vpi.so", "-o", n, vcsSrcs) mkString " "
-    cc(dir, "vpi", ccFlags)
-    link(dir, "vpi.so", List("vpi.o"), isLib=true)
-    if (!run(cmd)) throw new RuntimeException("vcs command failed")
+
+
+
+
+    val simSrcs = List(n + ".v", n + "-harness.v")
+
+    1 match {
+      case 1 => {
+        iverilogVpi(dir, n)
+        iverilogCompile(dir, n, simSrcs, "-DCLOCK_PERIOD=1")
+      }
+      case 2 =>  {
+        val ccFlags = List("-I$VCS_HOME/include", "-I" + dir, "-fPIC", "-std=c++11")
+        cc(dir, "vpi", ccFlags mkString " ")
+        link(dir, "vpi.so", List("vpi.o"), isLib=true)
+        val vcsFlags = List("-full64", "-quiet", "-timescale=1ns/1ps", "-debug_pp", "-Mdir=" + n + ".csrc",
+          "+v2k", "+vpi", "+define+CLOCK_PERIOD=1", "+vcs+initreg+random")
+
+        val cmd = (List("cd", dir, "&&") ++
+          List("vcs") ++ vcsFlags ++ List("-use_vpiobj", "vpi.so", "-o", n) ++ simSrcs) mkString " "
+
+        if (!run(cmd)) throw new RuntimeException("vcs command failed")
+      }
+    }
+
+
+
   }
 
   private def if_not_synthesis = "`ifndef SYNTHESIS\n// synthesis translate_off\n"
