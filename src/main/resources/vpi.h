@@ -195,7 +195,7 @@ private:
           }
         }
 #else
-        std::cout << z"possible DFF primitive in module but simulator hast no support" << std::endl;
+        std::cout << "possible DFF primitive in module but simulator hast no support" << std::endl;
 #endif
       }
       if (id > 0) break;
