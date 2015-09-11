@@ -14,13 +14,25 @@ template<class T> struct sim_data_t {
   std::vector<T> inputs;
   std::vector<T> outputs;
   std::vector<T> signals;
-  std::map<std::string, size_t> signal_map;
-  std::map<std::string, T> clk_map;
+  std::map<const std::string, size_t> signal_map;
+  std::map<const std::string, T> clk_map;
+};
+
+class sim_signal {
+public:
+    virtual std::string get_value() = 0;
+    virtual bool put_value(const std::string& value) = 0;
+//    virtual void put_value(val_t value, size_t idx) = 0;
+    virtual size_t get_width() = 0;
+    virtual size_t get_num_words() {
+      return ((get_width() - 1) >> 6) + 1;
+    };
 };
 
 template <class T> class sim_api_t {
 public:
   void tick() {
+
     static bool is_reset = false;
     // First, Generates output tokens  (in hex)
     generate_tokens();
@@ -28,6 +40,8 @@ public:
       start();
       is_reset = false;
     }
+
+
     
     // Next, handle commands from the testers
     bool exit = false;
@@ -35,7 +49,7 @@ public:
       size_t cmd;
       std::cin >> std::dec >> cmd;
       switch ((SIM_CMD) cmd) {
-        case RESET: 
+        case RESET:
           reset(); is_reset = true; exit = true; break;
         case STEP: 
           consume_tokens();
@@ -52,26 +66,49 @@ public:
       }
     } while (!exit);
   }
-private:
-  virtual void reset() = 0;
-  virtual void start() = 0; 
+protected:
+  virtual void reset() {
+    for (size_t i = 0 ; i < sim_data.resets.size() ; i++) {
+      sim_data.resets[i]->put_value("1");
+    }
+  }
+
+  virtual void start() {
+    for (size_t i = 0 ; i < sim_data.resets.size() ; i++) {
+      sim_data.resets[i]->put_value("0");
+    }
+  }
   virtual void finish() = 0;
   virtual void update() = 0; 
   virtual void step() = 0;
   // Consumes input tokens (in hex)
-  virtual void put_value(T& sig) = 0;
+  virtual void put_value(T sig) {
+    std::string value;
+    size_t words = sig->get_num_words();
+    for (size_t k = 0 ; k < words  ; k++) {
+      // 64 bit chunks are given
+      std::string v;
+      std::cin >> v;
+      value += v;
+    }
+    sig->put_value(value);
+  }
+
   // Generate output tokens (in hex)
-  virtual void get_value(T& sig) = 0;
+  virtual void get_value(T sig) {
+    std::cerr << sig->get_value() << std::endl;
+  }
+
+
   // Find a signal of path 
-  virtual int search(std::string& path) { return -1; }
+  virtual int search(const std::string& /*path*/) { return -1; }
 
   void poke() {
     size_t id;
     std::cin >> std::dec >> id;
-    T obj = sim_data.signals[id];
-    if (obj) {
-      put_value(obj);
-    } else {
+    try{
+      put_value(sim_data.signals.at(id));
+    } catch(std::out_of_range&) {
       std::cout << "Cannot find the object of id = " << id << std::endl;
       finish();
       exit(0);
@@ -81,10 +118,9 @@ private:
   void peek() {
     size_t id;
     std::cin >> std::dec >> id;
-    T obj = sim_data.signals[id];
-    if (obj) {
-      get_value(obj);
-    } else {
+    try{
+      get_value(sim_data.signals.at(id));
+    } catch(std::out_of_range&) {
       std::cout << "Cannot find the object of id = " << id << std::endl;
       finish();
       exit(0);
@@ -94,7 +130,7 @@ private:
   void getid() {
     std::string wire;
     std::cin >> wire;
-    std::map<std::string, size_t>::iterator it = sim_data.signal_map.find(wire);
+    auto it = sim_data.signal_map.find(wire);
     if (it != sim_data.signal_map.end()) {
       std::cerr << it->second << std::endl;
     } else {
@@ -111,7 +147,7 @@ private:
   void setclk() {
     std::string clkname;
     std::cin >> clkname;
-    typename std::map<std::string, T>::iterator it = sim_data.clk_map.find(clkname);
+    auto it = sim_data.clk_map.find(clkname);
     if (it != sim_data.clk_map.end()) {
       put_value(it->second);
     } else {
@@ -133,7 +169,14 @@ private:
 protected:
   sim_data_t<T> sim_data;
 
-  void read_signal_map(std::string filename) {
+  virtual size_t add_signal(T sig, const std::string& wire) {
+    size_t id = sim_data.signals.size();
+    sim_data.signals.push_back(sig);
+    sim_data.signal_map[wire] = id;
+    return id;
+  }
+
+  void read_signal_map(const std::string& filename) {
     std::ifstream file(filename.c_str());
     if (!file) {
       std::cout << "Cannot open " << filename << std::endl;

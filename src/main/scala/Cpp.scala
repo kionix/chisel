@@ -731,7 +731,7 @@ class CppBackend extends Backend {
   }
 
   override def compile(c: Module, flagsIn: Option[String]) {
-    val c11 = if (hasPrintfs) " -std=c++11 " else ""
+    val c11 = " -std=c++11 "
     val cxxFlags = (flagsIn getOrElse CXXFLAGS) + c11
     val cppFlags = CPPFLAGS + " -I../ -I" + chiselENV + "/csrc/"
     val allFlags = List(cppFlags, cxxFlags).mkString(" ")
@@ -1250,7 +1250,7 @@ class CppBackend extends Backend {
         writeCppFile("#if __cplusplus >= 201103L\n"
           + "  if (" + emitLoWordRef(p.cond)
           + ") dat_fprintf<" + p.needWidth() + ">(f, "
-          + p.args.map(emitRef _).foldLeft(CString(p.format))(_ + ", " + _)
+          + p.args.map(emitRef).foldLeft(CString(p.format))(_ + ", " + _)
           + ");\n"
           + "#endif\n")
       }
@@ -1265,7 +1265,7 @@ class CppBackend extends Backend {
         writeCppFile("#if __cplusplus >= 201103L\n"
           + "  if (" + emitLoWordRef(p.cond)
           + ") dat_prints<" + p.needWidth() + ">(s, "
-          + p.args.map(emitRef _).foldLeft(CString(p.format))(_ + ", " + _)
+          + p.args.map(emitRef).foldLeft(CString(p.format))(_ + ", " + _)
           + ");\n"
           + "#endif\n")
       }

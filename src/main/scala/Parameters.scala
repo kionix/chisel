@@ -61,6 +61,7 @@
 package Chisel
 
 import scala.collection.immutable.{Seq=>Seq, Iterable=>Iterable}
+import scala.reflect.ClassTag
 import scala.{collection=>readonly}
 import scala.collection.mutable
 
@@ -171,14 +172,14 @@ final case class ViewSym(view:View) {
 abstract class _Lookup {
   var path:List[Class[_]] = null
 
-  def apply[T](pname:Any, site:View):Ex[T]
+  def apply[T : ClassTag](pname:Any, site:View):Ex[T]
 
   // build a new Lookup that just defers to this one
   final def push() = {
     val me = this
     new _Lookup {
       this.path = me.path
-      def apply[T](pname:Any, site:View) = me.apply(pname, site)
+      def apply[T : ClassTag](pname:Any, site:View) = me.apply(pname, site)
     }
   }
 }
@@ -260,7 +261,7 @@ abstract class World(
     class TopLookup extends _Lookup {
       this.path = Nil
 
-      def apply[T](pname:Any, site:View):Ex[T] = {
+      def apply[T : ClassTag](pname:Any, site:View):Ex[T] = {
         val here = _otherView(this, site)
         (
           try topDefs(pname, site, here)
@@ -268,8 +269,8 @@ abstract class World(
             case e:scala.MatchError => throw new ParameterUndefinedException(pname, e)
           }
         ) match {
-          case k:Knob[T] => ExVar[T](_VarKnob[T](k.name))
-          case ex:Ex[T] => _bindLet[T](pname,ex)
+          case k:Knob[T @unchecked] => ExVar[T](_VarKnob[T](k.name))
+          case ex:Ex[T @unchecked] => _bindLet[T](pname,ex)
           case lit => ExLit(lit.asInstanceOf[T])
         }
       }
@@ -448,12 +449,12 @@ final class Parameters(
     class KidLookup extends _Lookup {
       this.path = _look.path
 
-      def apply[T](f:Any, site:View):Ex[T] = {
+      def apply[T : ClassTag](f:Any, site:View): Ex[T] = {
         val here = _world._otherView(this, site)
         val up = _world._otherView(_look, site)
 
         mask(f, site, here, up) match {
-          case e:Ex[T] => e
+          case e:Ex[T @unchecked] => e
           case lit => ExLit(lit.asInstanceOf[T])
         }
       }

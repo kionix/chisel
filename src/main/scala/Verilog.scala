@@ -30,10 +30,9 @@
 
 package Chisel
 
-import java.io.PrintWriter
-
-import scala.collection.mutable.{ArrayBuffer, HashSet, HashMap, LinkedHashMap}
-import scala.collection.immutable.ListSet
+import java.io.FileWriter
+import scala.sys.process._
+import scala.collection.{immutable, mutable}
 
 object VerilogBackend {
   val keywords = Set[String](
@@ -51,20 +50,166 @@ object VerilogBackend {
     "specparam", "strength", "strong0", "strong1", "supply0", "supply1",
     "table", "task", "time", "tran", "tranif0", "tranif1", "tri", "tri0",
     "tri1", "triand", "trior", "trireg", "unsigned", "vectored", "wait",
-    "wand", "weak0", "weak1", "while", "wire", "wor", "xnor", "xor",
+    "wand", "weak0", "weak1", "while", "wire", "wor", "xnor", "xor", "rand", "fd",
     "SYNTHESIS", "PRINTF_COND", "VCS")
 }
 
-class VerilogBackend extends Backend {
+abstract class Simulator extends FileSystemUtilities {
+  def compile (c: Module, n: String, flags: Option[String]): Unit
+  def vcdHarness(modName:String , harness: FileWriter, indent: Int, isMem: Boolean): Unit
+  def target(c:Module, n: String): Seq[String]
+
+  def moduleSources(n: String) = Seq(n + ".v", n + "-harness.v")
+
+  val extraSources = mutable.ListBuffer.empty[String]
+
+  val dir = Driver.targetDir
+  val vpiName = "vpi"
+
+  val clkPeriod = 1
+
+  def simSources(n: String): Seq[String] = extraSources ++ moduleSources(n)
+}
+
+class IVerilog extends Simulator{
+  def compile (c: Module, n: String, flags: Option[String]) = {
+    val vvpName = n + ".vvp"
+    cc(dir, vpiName, "-std=c++11 " + ("iverilog-vpi --cflags".!!).trim)
+    val vpiCmd = List("cd", dir, "&&", "iverilog-vpi", vpiName + ".o", s"--name=$vpiName").mkString(" ")
+    if (!run(vpiCmd)) throwException("failed to run iverilog-vpi" + vpiName + ".cpp")
+
+    val cmd = List("cd", dir, "&&" ,"iverilog", "-mvpi", s"-o$vvpName",
+      "-tvvp", flags.getOrElse(""), "-DCLOCK_PERIOD=" + clkPeriod, simSources(n) mkString " " ).mkString(" ")
+    if (!run(cmd)) throwException("failed to run iverilog-vpi for " + n)
+
+//    val vvpFile = scala.io.Source.fromFile(dir + vvpName)
+//    val exeName = dir + "/" + name
+//    val exe = new PrintWriter(exeName)
+//    exe.println(s"#! /usr/local/bin/vvp -M./$dir")
+//    vvpFile.getLines().drop(1).foreach(exe.println(_))
+//    exe.close()
+//    new java.io.File(exeName).setExecutable(true)
+  }
+
+  def vcdHarness(modName:String , harness: FileWriter, indent: Int, isMem: Boolean): Unit = {
+    val i = " " * indent
+    harness write i + "/*** VCD dump ***/\n"
+    harness write i + "$dumpfile(\"%s.vcd\");\n".format(dir + modName)
+    harness write i + "$dumpvars(0);\n"
+    if (isMem)
+      harness write  i + "/*$dumpmem();///???*/\n" // TODO find a way to dump memory in iverilog
+  }
+
+
+  def target(c:Module, n: String) =  Seq("vvp", s"-M$dir", s"$dir$n.vvp")
+}
+
+/**
+ *  support for Mentor Graphics Modelsim and Questasim
+ *  MGC_HOME environment variable should point to installation folder
+ *  and $MGC_HOME/bin should be in PATH
+ */
+
+class Modelsim extends Simulator{
+  val workLibName = "work"
+
+  def compile (c: Module, n: String, flags: Option[String]) = {
+
+    val ccFlags = List("-I$MGC_HOME/include", "-I" + dir, "-fPIC", "-std=c++11")
+    cc(dir, vpiName, ccFlags mkString " ")
+    link(dir, vpiName + ".so", List(vpiName + ".o"), isLib=true)
+    var cmd = List("cd", dir, "&&" ,s"vlib $workLibName").mkString(" ")
+    if (!run(cmd)) throwException(s"vlib $workLibName failed!")
+
+    cmd = List("cd", dir, "&&" ,s"vlog -64 +define+CLOCK_PERIOD=$clkPeriod " +
+      " -timescale \"1ns / 1ps\" -vopt -quiet " + (simSources(n) mkString " ")).mkString(" ")
+    if (!run(cmd)) throwException(s"$cmd FAILED!")
+  }
+
+  def vcdHarness(modName:String , harness: FileWriter, indent: Int, isMem: Boolean): Unit = {
+    val i = " " * indent
+    harness write i + "/*** VCD dump ***/\n"
+    harness write i + "$fdumpfile(\"%s.vcd\");\n".format(dir + modName)
+    harness write i + "$dumpvars(0);\n"
+    if (isMem)
+      harness write  i + "/*$dumpmem();///???*/\n" // TODO
+  }
+
+
+  def target(c:Module, n: String) = Seq("vsim", "-64", "-noautoldlibpath", "-vopt", "-quiet", "-c",
+    "-do", s"cd $dir; onElabError resume; run -all; exit", "-pli", s"$dir/$vpiName.so", "-lib", s"$dir/$workLibName",
+    "test")
+}
+
+class Verilator extends Simulator{
+
+  override def moduleSources(n: String) = Seq(n + ".v", n + "-harness.cpp")
+  def compile (c: Module, n: String, flags: Option[String]) = {
+    val cmd = List("cd", dir, "&&" ,"verilator", "--top-module", c.moduleName, "-Wno-WIDTH",
+      "-CFLAGS -std=c++11", "-Wno-STMTDLY", "--exe", "--cc",
+      flags.getOrElse(""), if(Driver.isVCD) "--trace" else "" , "+define+CLOCK_PERIOD=" + clkPeriod, simSources(n) mkString " " ).mkString(" ")
+    if (!run(cmd)) throwException(s"failed to run $cmd for $n")
+
+    val makeCmd = List("cd", dir + "obj_dir", "&&" ,"make", "-f", s"V${c.moduleName}.mk").mkString(" ")
+    if (!run(makeCmd)) throwException(s"failed to run $cmd for $n")
+  }
+
+  def vcdHarness(modName:String , harness: FileWriter, indent: Int, isMem: Boolean): Unit = {
+    val i = " " * indent
+    harness write i + "/*** VCD dump ***/\n"
+    harness write i + "$dumpfile(\"%s.vcd\");\n".format(dir + modName)
+    harness write i + "$dumpvars(0);\n"
+    if (isMem)
+      harness write  i + "/*$dumpmem();///???*/\n" // TODO find a way to dump memory in iverilog
+  }
+
+
+  def target(c:Module, n: String) = Seq(dir +"obj_dir/V" + c.moduleName)
+}
+
+class Vcs extends  Simulator {
+  def compile (c: Module, n: String, flags: Option[String] = None) = {
+    val ccFlags = List("-I$VCS_HOME/include", "-I" + dir, "-fPIC", "-std=c++11")
+    cc(dir, "vpi", ccFlags mkString " ")
+    link(dir, "vpi.so", List("vpi.o"), isLib=true)
+
+    val vcsFlags = List("-full64", "-quiet", "-timescale=1ns/1ps", "-debug_pp", "-Mdir=" + n + ".csrc",
+      "+v2k", "+vpi", "+define+CLOCK_PERIOD=" + clkPeriod, "+vcs+initreg+random")
+    val cmd = (List("cd", dir, "&&", "vcs") ++ vcsFlags ++ List("-use_vpiobj", "vpi.so", "-o", n) ++
+      simSources(n)) mkString " "
+    if (!run(cmd)) throw new RuntimeException("vcs command failed")
+  }
+
+  def vcdHarness(modName:String , harness: FileWriter, indent: Int, isMem: Boolean): Unit = {
+    val i = " " * indent
+    harness write i + "/*** VPD dump ***/\n"
+    harness write i + "$vcdplusfile(\"%s.vpd\");\n".format(dir + modName)
+    harness write i + "$vcdpluson(0);\n"
+    if(isMem)
+      harness write i + "$vcdplusmemon;\n"
+  }
+
+  def target(c:Module, n: String) = Seq(dir + n, "-q", "+vcs+initreg+0")
+}
+
+class VerilogBackend(simulatorName: String = "vcs", verilogExtraSources: List[String] = List.empty[String]) extends Backend {
   val keywords = VerilogBackend.keywords
   override val needsLowering = Set("PriEnc", "OHToUInt", "Log2")
 
   override def isEmittingComponents: Boolean = true
 
-  val emittedModules = HashSet[String]()
+  val emittedModules = mutable.HashSet[String]()
 
-  val memConfs = HashMap[String, String]()
-  val compIndices = HashMap[String, Int]()
+  val memConfs = mutable.HashMap[String, String]()
+  val compIndices = mutable.HashMap[String, Int]()
+
+  val simulator = simulatorName match  {
+    case "vcs" => new Vcs
+    case "iverilog" => new IVerilog
+    case "verilator" => new Verilator
+    case "modelsim"|"questasim" => new Modelsim
+    case _ => Class.forName("Chisel."+simulatorName).newInstance.asInstanceOf[Simulator]
+  }
 
   private def getMemConfString: String =
     memConfs.map { case (conf, name) => "name " + name + " " + conf } reduceLeft(_ + _)
@@ -81,7 +226,7 @@ class VerilogBackend extends Backend {
       // Generate a unique name for the memory module.
       val candidateName = compName + emitRef(mem)
       val memModuleName = if( compIndices contains candidateName ) {
-        val count = (compIndices(candidateName) + 1)
+        val count = compIndices(candidateName) + 1
         compIndices += (candidateName -> count)
         candidateName + "_" + count
       } else {
@@ -125,7 +270,7 @@ class VerilogBackend extends Backend {
 
   def emitPortDef(m: MemAccess, idx: Int): String = {
     def str(prefix: String, ports: (String, Option[String])*): String =
-      ports.toList filter (_._2 != None) map { 
+      ports.toList filter (_._2.isDefined) map {
         case (x, y) => List("    .", prefix, idx, x, "(", y.get, ")").mkString 
       } mkString ",\n"
 
@@ -156,15 +301,18 @@ class VerilogBackend extends Backend {
   }
 
   def emitDef(c: Module): StringBuilder = {
-    val spacing = (if(c.verilog_parameters != "") " " else "")
-    var res = new StringBuilder 
+    val spacing = if(c.verilog_parameters != "") " " else ""
+    val res = new StringBuilder
     List("  ", c.moduleName, " ", c.verilog_parameters, spacing, c.name, "(") addString res
-    def getMapClk(x : Clock) : String = if ( c.isInstanceOf[BlackBox] ) c.asInstanceOf[BlackBox].mapClock(emitRef(x)) else emitRef(x)
+    def getMapClk(x : Clock) : String = c match {
+      case c:BlackBox => c.mapClock(emitRef(x))
+      case _ => emitRef(x)
+    }
     c.clocks map (x => "." + getMapClk(x) + "(" + emitRef(x) + ")") addString (res, ", ")
-    if (!c.clocks.isEmpty && !c.resets.isEmpty) res append ", "
+    if (c.clocks.nonEmpty && c.resets.nonEmpty) res append ", "
     c.resets.values map (x => "." + emitRef(x) + "(" + emitRef(x.inputs(0)) + ")") addString (res, ", ")
     var isFirst = true
-    val portDecs = ArrayBuffer[StringBuilder]()
+    val portDecs = mutable.ArrayBuffer[StringBuilder]()
     for ((n, io) <- c.wires if n != "reset" && n != Driver.implicitReset.name) {
       val portDec = new StringBuilder("." + n + "( ")
       io.dir match {
@@ -204,10 +352,10 @@ class VerilogBackend extends Backend {
       portDec append " )"
       portDecs += portDec
     }
-    val uncommentedPorts = portDecs.filter(!_.result.contains("//"))
+    val uncommentedPorts = portDecs.filter(!_.result().contains("//"))
     uncommentedPorts.init map (_ append ",")
     portDecs map (_ insert (0, "       "))
-    if (!c.clocks.isEmpty || !c.resets.isEmpty) res append ",\n" else res append "\n"
+    if (c.clocks.nonEmpty || c.resets.nonEmpty) res append ",\n" else res append "\n"
     res append (portDecs addString (new StringBuilder, "\n"))
     res append "\n  );\n"
     val driveRandPorts = c.wires filter (_._2.driveRand)
@@ -258,17 +406,17 @@ class VerilogBackend extends Backend {
           case _: Literal => x.needWidth()
           case _: UInt => if (x.inputs.isEmpty) 1 else find_gran(x.inputs(0))
           case _: Mux => gcd(find_gran(x.inputs(1)), find_gran(x.inputs(2)))
-          case _: Op => x.inputs map (find_gran(_)) reduceLeft (_ max _)
+          case _: Op => x.inputs.map(find_gran).max
           case _ => 1
         }
         val mask_writers = m.writeAccesses.filter(_.isMasked)
         val mask_grans = mask_writers.map(x => find_gran(x.mask))
-        val mask_gran = if (!mask_grans.isEmpty && mask_grans.forall(_ == mask_grans(0))) mask_grans(0) else 1
+        val mask_gran = if (mask_grans.nonEmpty && mask_grans.forall(_ == mask_grans(0))) mask_grans(0) else 1
         val configStr = List(
          " depth ", m.n,
          " width ", m.needWidth(),
          " ports ", m.ports map (_.getPortType) mkString ",",
-         (if (mask_gran != 1) " mask_gran " + mask_gran else ""), "\n").mkString
+         if (mask_gran != 1) " mask_gran " + mask_gran else "", "\n").mkString
         val name = getMemName(m, configStr)
         ChiselError.info("MEM " + name)
 
@@ -281,7 +429,7 @@ class VerilogBackend extends Backend {
 
       case r: ROMRead =>
         val inits = r.rom.sparseLits map { case (i, v) => 
-          s"    ${i}: ${emitRef(r)} = ${emitRef(v)};\n" } addString (new StringBuilder)
+          s"    ${i}: ${emitRef(r)} = ${emitRef(v)};\n" } addString new StringBuilder
         (List(s"  always @(*) case (${emitRef(r.inputs.head)})\n",
         inits.result,
         s"    default: begin\n",
@@ -290,7 +438,7 @@ class VerilogBackend extends Backend {
         s"      ${emitRef(r)} = ${emitRand(r)};\n",
         endif_not_synthesis,
         s"    end\n",
-        "  endcase\n") addString (new StringBuilder)).result
+        "  endcase\n") addString new StringBuilder).result()
 
       case s: Sprintf =>
         List("  always @(*) $sformat(", emitTmp(s), ", ", (CString(s.format) +: (s.args map (emitRef _))) mkString ", ", ");\n").mkString
@@ -313,7 +461,7 @@ class VerilogBackend extends Backend {
       case x: Bits if x.isIo => ""
 
       case _: Assert =>
-        List("  reg", "[", (gotWidth-1), ":0] ", emitRef(node), ";\n").mkString
+        List("  reg", "[", gotWidth-1, ":0] ", emitRef(node), ";\n").mkString
 
       case _: Reg =>
         emitDecReg(node)
@@ -326,7 +474,7 @@ class VerilogBackend extends Backend {
 
       case m: Mem[_] if !m.isInline => ""
       case m: Mem[_] => 
-        List("  reg [", (m.needWidth()-1), ":0] ", emitRef(m), " [", (m.n-1), ":0];\n").mkString
+        List("  reg [", m.needWidth()-1, ":0] ", emitRef(m), " [", m.n-1, ":0];\n").mkString
 
       case x: MemAccess =>
         x.referenced = true
@@ -398,12 +546,8 @@ class VerilogBackend extends Backend {
     harness write "    $init_outs(" + (outs map (emitRef(_)) mkString ", ") + ");\n"
     harness write "    $init_sigs(%s);\n".format(c.name)
 
-    if (Driver.isVCD) {
-      harness write "    /*** VPD dump ***/\n"
-      harness write "    $vcdplusfile(\"%s.vpd\");\n".format(Driver.targetDir+c.name)
-      harness write "    $vcdpluson(0);\n"
-      if (Driver.isVCDMem) harness.write("    $vcdplusmemon;\n")
-    }
+    if (Driver.isVCD)
+      simulator.vcdHarness(modName = c.name, harness = harness, indent = 4, isMem = Driver.isVCDMem)
     harness write "  end\n\n"
 
     if (clocks.size > 1) {
@@ -416,12 +560,26 @@ class VerilogBackend extends Backend {
       harness write "  end\n"
     } else {
       harness write "  always @(negedge %s) begin\n".format(mainClk.name)
-      harness write "    $tick();\n".format(mainClk.name)
+      harness write "    $tick();\n"
       harness write "  end\n\n"
     }
     harness write "endmodule\n"
 
-    harness.close
+    harness.close()
+  }
+
+  def genCppHarness(c: Module, name: String) {
+
+    val harness  = createOutputFile(name + "-harness.cpp")
+
+    val ins = for ((n, io) <- c.wires if io.dir == INPUT) yield (emitRef(io), io.getWidth())
+    val outs = for ((n, io) <- c.wires if io.dir == OUTPUT) yield (emitRef(io), io.getWidth())
+    val mainClk = Driver.implicitClock.name
+    val clocks = Driver.clocks.map(_.name).toArray
+    val resets = c.resets.values.map(_.name).toArray
+
+    harness write cpp.CppHarness(c.moduleName, ins, outs, mainClk, clocks, resets, Driver.isVCD).toString()
+    harness.close()
   }
 
   // Is the specified node synthesizeable?
@@ -432,7 +590,7 @@ class VerilogBackend extends Backend {
       case x: Bits =>
         if (x.isIo && x.dir == INPUT) {
           true
-        } else if (node.inputs.length > 0) {
+        } else if (node.inputs.nonEmpty) {
           true
         } else {
           false
@@ -454,7 +612,7 @@ class VerilogBackend extends Backend {
       resNode.append(emitDef(m))
     }
     // Did we generate any non-synthesizable definitions?
-    if (resSimulate.length > 0) {
+    if (resSimulate.nonEmpty) {
       res.append(if_not_synthesis)
       res ++= resSimulate
       res.append(endif_not_synthesis)
@@ -486,7 +644,7 @@ class VerilogBackend extends Backend {
         clkDomains(clk) append emitPrintf(p)
       case _ =>
     })
-    for ((clock, dom) <- clkDomains ; if !dom.isEmpty) {
+    for ((clock, dom) <- clkDomains ; if dom.nonEmpty) {
       if (res.isEmpty) res.append("\n")
       res.append("  always @(posedge " + emitRef(clock) + ") begin\n")
       res.append(dom)
@@ -496,24 +654,28 @@ class VerilogBackend extends Backend {
   }
 
   def emitPrintf(p: Printf): String = {
-    val file = if (Driver.isGenHarness) "32'h80000001" else "32'h80000002" 
+//    val file = if (Driver.isGenHarness) "32'h80000001" else "32'h80000002"
+    val file = if (Driver.isGenHarness) "32'h80000001" else "32'h80000002"
     (List(if_not_synthesis,
     "`ifdef PRINTF_COND\n",
     "    if (`PRINTF_COND)\n",
     "`endif\n",
+    s"      fd = $file;\n",
     "      if (", emitRef(p.cond), ")\n",
-    "        $fwrite(", file, ", ", (CString(p.format) +: (p.args map (emitRef _))) mkString ", ", ");\n",
-    endif_not_synthesis) addString (new StringBuilder)).result
+    "        $fwrite(", "fd", ", ", (CString(p.format) +: (p.args map emitRef)) mkString ", ", ");\n",
+    endif_not_synthesis) addString new StringBuilder).result()
   }
   def emitAssert(a: Assert): String = {
-    val file = if (Driver.isGenHarness) "32'h80000001" else "32'h80000002" 
+//    val file = if (Driver.isGenHarness) "32'h80000001" else "32'h80000002"
+    val file = if (Driver.isGenHarness) "32'h80000001" else "32'h80000002"
     (List(if_not_synthesis,
+      s"      fd = $file;\n",
     "  if(", emitRef(a.reset), ") ", emitRef(a), " <= 1'b1;\n",
     "  if(!", emitRef(a.cond), " && ", emitRef(a), " && !", emitRef(a.reset), ") begin\n",
-    "    $fwrite(", file, ", ", CString("ASSERTION FAILED: %s\n"), ", ", CString(a.message), ");\n",
+    "    $fwrite(", "fd", ", ", CString("ASSERTION FAILED: %s\n"), ", ", CString(a.message), ");\n",
     "    $finish;\n",
     "  end\n",
-    endif_not_synthesis) addString (new StringBuilder)).result
+    endif_not_synthesis) addString new StringBuilder).result()
   }
 
   def emitReg(node: Node): String = {
@@ -544,15 +706,16 @@ class VerilogBackend extends Backend {
   }
 
   def emitDecs(c: Module): StringBuilder =
-    c.nodes.map(emitDec(_)).addString(new StringBuilder)
+    c.nodes.map(emitDec).addString(new StringBuilder)
 
   def emitInits(c: Module): StringBuilder = {
     val sb = new StringBuilder
-    c.nodes.map(emitInit(_)).addString(sb)
+    c.nodes.map(emitInit).addString(sb)
 
     val res = new StringBuilder
-    if (!sb.isEmpty) {
+    if (sb.nonEmpty) {
       res append if_not_synthesis
+      res append "  integer fd;\n"
       res append "  integer initvar;\n"
       res append "  initial begin\n"
       res append "    #0.002;\n"
@@ -570,7 +733,7 @@ class VerilogBackend extends Backend {
     val res = new StringBuilder()
     var first = true
     (c.clocks ++ c.resets.values.toList) map ("input " + emitRef(_)) addString (res, ", ")
-    val ports = ArrayBuffer[StringBuilder]()
+    val ports = mutable.ArrayBuffer[StringBuilder]()
     for ((n, io) <- c.wires) {
       val prune = if (io.prune && c != topMod) "//" else ""
       io.dir match {
@@ -580,9 +743,9 @@ class VerilogBackend extends Backend {
           ports += List("    ", prune, "output", emitWidth(io), " ", emitRef(io)) addString (new StringBuilder)
       }
     }
-    val uncommentedPorts = ports.filter(!_.result.contains("//"))
+    val uncommentedPorts = ports.filter(!_.result().contains("//"))
     uncommentedPorts.init map (_ append ",")
-    if (!c.clocks.isEmpty || !c.resets.isEmpty) res.append(",\n") else res.append("\n")
+    if (c.clocks.nonEmpty || c.resets.nonEmpty) res.append(",\n") else res.append("\n")
     res.append(ports addString (new StringBuilder, "\n"))
     res.append("\n);\n\n")
     res.append(emitDecs(c))
@@ -596,13 +759,13 @@ class VerilogBackend extends Backend {
   }
 
   def flushModules(
-    defs: LinkedHashMap[String, LinkedHashMap[StringBuilder,ArrayBuffer[Module]]],
+    defs: mutable.LinkedHashMap[String, mutable.LinkedHashMap[StringBuilder, mutable.ArrayBuffer[Module]]],
     level: Int ): Unit =
   {
     for( (className, modules) <- defs ) {
       var index = 0
       for ( (text, comps) <- modules) {
-        val moduleName = if( modules.size > 1 ) {
+        val moduleName = if( modules.nonEmpty ) {
           className + "_" + index.toString
         } else {
           className
@@ -622,7 +785,7 @@ class VerilogBackend extends Backend {
 
 
   def emitChildren(top: Module,
-    defs: LinkedHashMap[String, LinkedHashMap[StringBuilder, ArrayBuffer[Module] ]],
+    defs: mutable.LinkedHashMap[String, mutable.LinkedHashMap[StringBuilder, mutable.ArrayBuffer[Module] ]],
     out: java.io.FileWriter, depth: Int): Unit = top match {
     case _: BlackBox =>
     case _ =>
@@ -653,7 +816,7 @@ class VerilogBackend extends Backend {
     /* *defs* maps Mod classes to Mod instances through
        the generated text of their module.
        We use a LinkedHashMap such that later iteration is predictable. */
-    val defs = LinkedHashMap[String, LinkedHashMap[StringBuilder, ArrayBuffer[Module]]]()
+    val defs = mutable.LinkedHashMap[String, mutable.LinkedHashMap[StringBuilder, mutable.ArrayBuffer[Module]]]()
     var level = 0
     for (c <- Driver.sortedComps) {
       ChiselError.info(genIndent(depth) + "COMPILING " + c
@@ -675,14 +838,14 @@ class VerilogBackend extends Backend {
       val res = emitModuleText(c)
       val className = extractClassName(c)
       if( !(defs contains className) ) {
-        defs += (className -> LinkedHashMap[StringBuilder, ArrayBuffer[Module] ]())
+        defs += (className -> mutable.LinkedHashMap[StringBuilder, mutable.ArrayBuffer[Module] ]())
       }
       if( defs(className) contains res ) {
         /* We have already outputed the exact same source text */
         defs(className)(res) += c
         ChiselError.info("\t" + defs(className)(res).length + " components")
       } else {
-        defs(className) += (res -> ArrayBuffer[Module](c))
+        defs(className) += (res -> mutable.ArrayBuffer[Module](c))
       }
     }
     flushModules(defs, level)
@@ -702,13 +865,18 @@ class VerilogBackend extends Backend {
     ChiselError.checkpoint()
     out.close()
 
-    if (!memConfs.isEmpty) {
+    if (memConfs.nonEmpty) {
       val out_conf = createOutputFile(n + ".conf")
       out_conf.write(getMemConfString)
       out_conf.close()
     }
     if (Driver.isGenHarness) {
-      genHarness(c, n)
+      if(simulatorName == "verilator") {
+        genCppHarness(c, n)
+        copyToTarget("vl.h")
+      }
+      else
+        genHarness(c, n)
       copyToTarget("sim_api.h")
       copyToTarget("vpi.h")
       copyToTarget("vpi.cpp")
@@ -716,56 +884,8 @@ class VerilogBackend extends Backend {
   }
 
   override def compile(c: Module, flags: Option[String]) {
-    def iverilogVpi (dir: String, name: String, flags: String = "") {
-      val cmd = List("cd", dir, "&&", "iverilog-vpi", "vpi.cpp").mkString(" ")
-      println(s"running $cmd")
-      if (!run(cmd)) throwException("failed to run iverilog-vpi for " + name + ".cpp")
-    }
-
-    def iverilogCompile (dir: String, name: String, srcs: List[String], flags: String = "") {
-      val vvpName = name + ".vvp"
-      val cmd = List("cd", dir, "&&" ,"iverilog", "-mvpi", s"-o$vvpName", "-tvvp", flags,  srcs mkString " " ).mkString(" ")
-      println(s"running $cmd")
-      if (!run(cmd)) throwException("failed to run iverilog-vpi for " + name)
-      val vvpFile = scala.io.Source.fromFile(dir + vvpName)
-
-      val exeName = dir + "/" + name
-      val exe = new PrintWriter(exeName)
-      exe.println(s"#! /usr/local/bin/vvp -M./$dir")
-      vvpFile.getLines().drop(1).foreach(exe.println(_))
-      exe.close()
-      new java.io.File(exeName).setExecutable(true)
-    }
-
-    val n = Driver.appendString(Some(c.name),Driver.chiselConfigClassName)
-    val dir = Driver.targetDir + "/"
-
-
-
-
-    val simSrcs = List(n + ".v", n + "-harness.v")
-
-    1 match {
-      case 1 => {
-        iverilogVpi(dir, n)
-        iverilogCompile(dir, n, simSrcs, "-DCLOCK_PERIOD=1")
-      }
-      case 2 =>  {
-        val ccFlags = List("-I$VCS_HOME/include", "-I" + dir, "-fPIC", "-std=c++11")
-        cc(dir, "vpi", ccFlags mkString " ")
-        link(dir, "vpi.so", List("vpi.o"), isLib=true)
-        val vcsFlags = List("-full64", "-quiet", "-timescale=1ns/1ps", "-debug_pp", "-Mdir=" + n + ".csrc",
-          "+v2k", "+vpi", "+define+CLOCK_PERIOD=1", "+vcs+initreg+random")
-
-        val cmd = (List("cd", dir, "&&") ++
-          List("vcs") ++ vcsFlags ++ List("-use_vpiobj", "vpi.so", "-o", n) ++ simSrcs) mkString " "
-
-        if (!run(cmd)) throw new RuntimeException("vcs command failed")
-      }
-    }
-
-
-
+    val n = Driver.appendString(Some(c.name), Driver.chiselConfigClassName)
+    simulator.compile(c, n, flags)
   }
 
   private def if_not_synthesis = "`ifndef SYNTHESIS\n// synthesis translate_off\n"

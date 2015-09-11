@@ -327,6 +327,8 @@ object Driver extends FileSystemUtilities{
   private def readArgs(args: Array[String]): Unit = {
     var i = 0
     var backendName = "c"     // Default backend is Cpp.
+    var verilogSimName = ""
+    val verilogExtraSources = collection.mutable.ListBuffer.empty[String]
     while (i < args.length) {
       val arg = args(i)
       arg match {
@@ -369,6 +371,8 @@ object Driver extends FileSystemUtilities{
         case "--parallelMakeJobs" => parallelMakeJobs = args(i + 1).toInt; i += 1
         case "--isVCDinline" => isVCDinline = true
         case "--backend" => backendName = args(i + 1); i += 1
+        case "--verilogSim" => verilogSimName = args(i + 1); i += 1
+        case "--verilogExtraSource" => verilogExtraSources += args(i + 1); i += 1
         case "--compile" => isCompiling = true
         case "--test" => isTesting = true
         case "--testCommand" => 
@@ -426,7 +430,12 @@ object Driver extends FileSystemUtilities{
       case "fpga" => new FPGABackend
       case "null" => new NullBackend
       case "sysc" => new SysCBackend
-      case "v" => new VerilogBackend
+      case "v" => new VerilogBackend(if(verilogSimName.nonEmpty)
+        verilogSimName
+      else {
+        ChiselError.warning("--verilogSim not specified for Verilog backend. Defaulting to \"vcs\"")
+        "vcs" // Default Verilog simulator is VCS
+      }, verilogExtraSources.toList)
       case _ => Class.forName(backendName).newInstance.asInstanceOf[Backend]
     }
   }

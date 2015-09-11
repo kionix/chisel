@@ -17,7 +17,7 @@ WWW_PAGES := index.html documentation.html download.html faq.html releases.html
 WWW_EXTRA := manual.html getting-started.html parameters.html
 
 # The following subdirectories build documentation correctly.
-PDF_DIRS	:= installation manual tutorial getting-started talks/dac12 parameters cheatsheet
+PDF_DIRS	:= bootcamp installation manual tutorial getting-started talks/dac12 parameters cheatsheet
 # Define a function to map PDF_DIRS to a PDF base name.
 # Basically, every directory is the base name of the pdf except for dac12-talk.
 pdf_base_name_from_dir = $(subst talks/dac12,dac12-talk,$(1))
@@ -40,7 +40,7 @@ installTop:= ../www
 # Set the current release info
 # RELEASE_TAGTEXT is something like: v2.2.18 125 g3501d7f
 #  i.e., the output of git describe with dashes replaced by spaces
-RELEASE_TAGTEXT=$(subst -, ,$(shell git describe --tags release || git describe))
+RELEASE_TAGTEXT=$(subst -, ,$(shell git describe --tags release --always))
 RELEASE_TAG=$(firstword $(RELEASE_TAGTEXT))
 RELEASE_DATETEXT=$(shell git log -1 --format="%ai" $(RELEASE_TAG))
 RELEASE_DATE=$(firstword $(RELEASE_DATETEXT))

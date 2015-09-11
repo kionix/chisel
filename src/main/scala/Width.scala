@@ -47,7 +47,7 @@ object Width {
     if (w < -1) {
       ChiselError.warning("Width:apply < -1")
       if (throwIfUnsetRef) {
-        throwException("Width:apply < -1");
+        throwException("Width:apply < -1")
       }
     }
     val neww = new Width(w)
@@ -96,7 +96,7 @@ class Width(_width: Int) extends Ordered[Width] {
   /** Indicate whether width is actually known(set) or not */
   def isKnown: Boolean = widthVal != unSet
 
-  /** @return an "known" integer value
+  /** @return a "known" integer value
     * @throws NoSuchElementException if called when the width is unknown */
   def needWidth(): Int = {
     if (! isKnown ) {

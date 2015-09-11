@@ -1,5 +1,5 @@
 #ifndef __VPI_H
-#define __VPI_h
+#define __VPI_H
 
 #include "vpi_user.h"
 #include "sim_api.h"
@@ -7,93 +7,83 @@
 
 PLI_INT32 tick_cb(p_cb_data cb_data);
 
-class vpi_api_t: public sim_api_t<vpiHandle> {
+class vpi_sig : public sim_signal {
+  vpiHandle sig;
 public:
-  void init_clks() {
+  vpi_sig(vpiHandle handle) : sig(handle) { }
+
+  virtual bool put_value(const std::string& value) {
+    s_vpi_value value_s;
+    value_s.format = vpiHexStrVal;
+    value_s.value.str = (PLI_BYTE8 *) value.c_str();
+    vpi_put_value(sig, &value_s, NULL, vpiNoDelay);
+  }
+
+  virtual std::string get_value() {
+    s_vpi_value value_s;
+    value_s.format = vpiHexStrVal;
+    vpi_get_value(sig, &value_s);
+    return std::string(value_s.value.str);
+  }
+
+  virtual size_t get_width() {
+    return (size_t) vpi_get(vpiSize, sig);
+  }
+};
+
+
+class vpi_api_t : public sim_api_t<vpi_sig*> {
+public:
+    virtual void init_clks() {
     vpiHandle syscall_handle = vpi_handle(vpiSysTfCall, NULL);
     vpiHandle arg_iter = vpi_iterate(vpiArgument, syscall_handle);
     // Cache clocks
-    while (vpiHandle arg_handle = vpi_scan(arg_iter)) {
+    vpiHandle arg_handle;
+    while (arg_iter && (arg_handle = vpi_scan(arg_iter))) {
       std::string name = vpi_get_str(vpiName, arg_handle);
-      sim_data.clk_map[name.substr(0, name.rfind("_len"))] = arg_handle;
+      sim_data.clk_map.insert(std::make_pair(name.substr(0, name.rfind("_len")), new vpi_sig(arg_handle) ));
     }
   }
 
-  void init_rsts() {
+  virtual void init_rsts() {
     vpiHandle syscall_handle = vpi_handle(vpiSysTfCall, NULL);
     vpiHandle arg_iter = vpi_iterate(vpiArgument, syscall_handle);
     // Cache Resets
     vpiHandle arg_handle;
     while (arg_iter && (arg_handle = vpi_scan(arg_iter))) {
-      sim_data.resets.push_back(arg_handle);
+      sim_data.resets.push_back(new vpi_sig(arg_handle));
     }
   }
 
-  void init_ins() {
+    virtual void init_ins() {
     vpiHandle syscall_handle = vpi_handle(vpiSysTfCall, NULL);
     vpiHandle arg_iter = vpi_iterate(vpiArgument, syscall_handle);
-    // Cache Inputs  
-    while (vpiHandle arg_handle = vpi_scan(arg_iter)) {
-      sim_data.inputs.push_back(arg_handle);
+    // Cache Inputs
+    vpiHandle arg_handle;
+    while (arg_iter && (arg_handle = vpi_scan(arg_iter))) {
+      sim_data.inputs.push_back(new vpi_sig(arg_handle));
     }
   }
 
-  void init_outs() {
+  virtual void init_outs() {
     vpiHandle syscall_handle = vpi_handle(vpiSysTfCall, NULL);
     vpiHandle arg_iter = vpi_iterate(vpiArgument, syscall_handle);
     // Cache Outputs
-    while (vpiHandle arg_handle = vpi_scan(arg_iter)) {
-      sim_data.outputs.push_back(arg_handle);
+    vpiHandle arg_handle;
+    while (arg_iter && (arg_handle = vpi_scan(arg_iter))) {
+      sim_data.outputs.push_back(new vpi_sig(arg_handle));
     }
   }
 
-  void init_sigs() {
+  virtual void init_sigs() {
     vpiHandle syscall_handle = vpi_handle(vpiSysTfCall, NULL);
-    top_handle = vpi_scan(vpi_iterate(vpiArgument, syscall_handle));
+    vpiHandle arg_iter = vpi_iterate(vpiArgument, syscall_handle);
+    top_handle = vpi_scan(arg_iter);
     search_signals();
   }
 
 private:
   vpiHandle top_handle;
-
-  void put_value(vpiHandle& sig) {
-    std::string value;
-    for (size_t k = 0 ; k < ((vpi_get(vpiSize, sig) - 1) >> 6) + 1 ; k++) {
-      // 64 bit chunks are given
-      std::string v;
-      std::cin >> v;
-      value += v;
-    }
-    s_vpi_value value_s;
-    value_s.format = vpiHexStrVal;
-    value_s.value.str = (PLI_BYTE8*) value.c_str();
-    vpi_put_value(sig, &value_s, NULL, vpiNoDelay);
-  }
-
-  void get_value(vpiHandle& sig) {
-    s_vpi_value value_s;
-    value_s.format = vpiHexStrVal;
-    vpi_get_value(sig, &value_s);
-    std::cerr << value_s.value.str << std::endl;
-  }
-
-  virtual void reset() {
-    for (size_t i = 0 ; i < sim_data.resets.size() ; i++) {
-      s_vpi_value value_s;
-      value_s.format = vpiHexStrVal;
-      value_s.value.str = (PLI_BYTE8*) "1";
-      vpi_put_value(sim_data.resets[i], &value_s, NULL, vpiNoDelay);
-    }
-  }
-
-  virtual void start() {
-    for (size_t i = 0 ; i < sim_data.resets.size() ; i++) {
-      s_vpi_value value_s;
-      value_s.format = vpiHexStrVal;
-      value_s.value.str = (PLI_BYTE8*) "0";
-      vpi_put_value(sim_data.resets[i], &value_s, NULL, vpiNoDelay);
-    }
-  }
 
   virtual void finish() { vpi_control(vpiFinish, 0); }
 
@@ -112,13 +102,6 @@ private:
     data_s.value     = NULL;
     data_s.user_data = NULL;
     vpi_free_object(vpi_register_cb(&data_s));
-  }
-
-  virtual size_t add_signal(vpiHandle& sig_handle, std::string& wire) {
-    size_t id = sim_data.signals.size();
-    sim_data.signals.push_back(sig_handle);
-    sim_data.signal_map[wire] = id;
-    return id;
   }
 
   int search_signals(const char *wire = NULL) {
@@ -144,11 +127,12 @@ private:
       if (!wire || modpath == modname) {
         // Iterate its nets
         vpiHandle net_iter = vpi_iterate(vpiNet, mod_handle);
-        while (vpiHandle net_handle = vpi_scan(net_iter)) {
+        vpiHandle net_handle;
+        while (net_iter &&  (net_handle = vpi_scan(net_iter))) {
           std::string netname = vpi_get_str(vpiName, net_handle);
           std::string netpath = modname + "." + netname;
           size_t netid = (!wire && netname[0] != 'T') || wirename == netname ? 
-            add_signal(net_handle, netpath) : 0;
+            add_signal(new vpi_sig(net_handle), netpath) : 0;
           id = netid ? netid : id;
           if (id > 0) break;
         }
@@ -156,11 +140,12 @@ private:
 
         // Iterate its regs
         vpiHandle reg_iter = vpi_iterate(vpiReg, mod_handle);
-        while (vpiHandle reg_handle = vpi_scan(reg_iter)) {
+        vpiHandle reg_handle;
+        while (reg_iter &&  (reg_handle = vpi_scan(reg_iter))) {
           std::string regname = vpi_get_str(vpiName, reg_handle);
           std::string regpath = modname + "." + regname;
           size_t regid = !wire || wirename == regname ? 
-            add_signal(reg_handle, regpath) : 0;
+            add_signal(new vpi_sig(reg_handle), regpath) : 0;
           id = regid ? regid : id;
           if (id > 0) break;
         }
@@ -168,15 +153,17 @@ private:
 
         // Iterate its mems
         vpiHandle mem_iter = vpi_iterate(vpiRegArray, mod_handle);
-        while (vpiHandle mem_handle = vpi_scan(mem_iter)) {
+        vpiHandle mem_handle;
+        while (mem_iter &&  (mem_handle = vpi_scan(mem_iter))) {
           std::string memname = vpi_get_str(vpiName, mem_handle);
           if (!wire || arrname == memname) {
             vpiHandle elm_iter = vpi_iterate(vpiReg, mem_handle);
-            size_t idx = vpi_get(vpiSize, mem_handle);
-            while (vpiHandle elm_handle = vpi_scan(elm_iter)) {
+            // size_t idx = vpi_get(vpiSize, mem_handle); FIXME what is idx?
+            vpiHandle elm_handle;
+            while (elm_iter &&  (elm_handle = vpi_scan(elm_iter))) {
               std::string elmname = vpi_get_str(vpiName, elm_handle);
               std::string elmpath = modname + "." + elmname;
-              size_t elmid = add_signal(elm_handle, elmpath);
+              size_t elmid = add_signal(new vpi_sig(elm_handle), elmpath);
               id = wirename == elmname ? elmid : id;
             }
           }
@@ -188,20 +175,23 @@ private:
       if (!wire || wirepath == modname) {
 #if defined(vpiPrimitive)
         vpiHandle udp_iter = vpi_iterate(vpiPrimitive, mod_handle);
-        while (vpiHandle udp_handle = vpi_scan(udp_iter)) {
+        vpiHandle udp_handle;
+        while (udp_iter &&  (udp_handle = vpi_scan(udp_iter))) {
            if (vpi_get(vpiPrimType, udp_handle) == vpiSeqPrim) {
-             id = add_signal(udp_handle, modname);
+             id = add_signal(new vpi_sig(udp_handle), modname);
              break;
           }
         }
 #else
-        std::cout << "possible DFF primitive in module but simulator hast no support" << std::endl;
+#warning "Simulator VPI does not support vpiPrimitive."
+        std::cout << "Wire " << wire << " possibly belongs to a Primitive/UDP/DFF but simulator VPI has no support." << std::endl;
 #endif
       }
       if (id > 0) break;
 
       vpiHandle sub_iter = vpi_iterate(vpiModule, mod_handle);
-      while (vpiHandle sub_handle = vpi_scan(sub_iter)) {
+      vpiHandle sub_handle;
+      while (sub_iter &&  (sub_handle = vpi_scan(sub_iter))) {
         modules.push(sub_handle);
       }
     }
@@ -209,7 +199,7 @@ private:
     return id;
   }
 
-  virtual int search(std::string& wire) {
+  virtual int search(const std::string &wire) {
     return search_signals(wire.c_str());
   }
 };

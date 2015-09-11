@@ -1,10 +1,29 @@
+import sbt.Keys._
+import sbt.Keys.baseDirectory
+import sbt.Keys.crossScalaVersions
+import sbt.Keys.doc
+import sbt.Keys.libraryDependencies
+import sbt.Keys.name
+import sbt.Keys.organization
+import sbt.Keys.parallelExecution
+import sbt.Keys.pomExtra
+import sbt.Keys.pomIncludeRepository
+import sbt.Keys.publishArtifact
+import sbt.Keys.publishMavenStyle
+import sbt.Keys.publishTo
+import sbt.Keys.resolvers
+import sbt.Keys.sbtVersion
+import sbt.Keys.scalaVersion
+import sbt.Keys.scalacOptions
+import sbt.Keys.version
+
 lazy val chiselBuildSettings = Seq (
     organization := "edu.berkeley.cs",
     // version := "2.2.28",
     version := "2.3-SNAPSHOT",
     name := "chisel",
-    scalaVersion := "2.11.6",
-    crossScalaVersions := Seq("2.10.5", "2.11.6"),
+    scalaVersion := "2.11.7",
+    crossScalaVersions := Seq("2.10.5", "2.11.7"),
     //sourceDirectory := new File("@srcTop@"),
     publishMavenStyle := true,
     publishArtifact in Test := false,
@@ -60,6 +79,7 @@ lazy val chiselBuildSettings = Seq (
      */
     libraryDependencies += "com.novocode" % "junit-interface" % "0.10" % "test",
     libraryDependencies += "org.scalatest" %% "scalatest" % "2.2.4" % "test",
+    libraryDependencies += "com.typesafe.play" %% "twirl-api" % "1.1.1",
     libraryDependencies <+= (scalaVersion)("org.scala-lang" % "scala-reflect" % _),
 
     // Execute tests in the current project serially.
@@ -72,10 +92,15 @@ lazy val chiselBuildSettings = Seq (
  )
 
 lazy val chisel = (project in file(".")).
-  enablePlugins(BuildInfoPlugin).
+  enablePlugins(play.twirl.sbt.SbtTwirl, BuildInfoPlugin).
   settings(chiselBuildSettings: _*).
   settings(
     buildInfoKeys := Seq[BuildInfoKey](name, version, scalaVersion, sbtVersion),
     // We should really be using name.vale, but currently, the package is "Chisel" (uppercase first letter)
     buildInfoPackage := /* name.value */ "Chisel"
   )
+
+
+TwirlKeys.templateFormats += ("cpp" -> "Chisel.CppFormat")
+TwirlKeys.templateFormats += ("v" -> "play.twirl.api.TxtFormat")
+TwirlKeys.templateImports += "Chisel._"

@@ -29,8 +29,9 @@
 */
 
 package Chisel
-import scala.collection.mutable.{ArrayBuffer, HashMap, Queue => ScalaQueue}
-import scala.collection.immutable.ListSet
+
+import scala.collection.mutable
+import scala.collection.immutable
 import scala.util.Random
 import java.io._
 import java.lang.Double.{longBitsToDouble, doubleToLongBits}
@@ -52,17 +53,17 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
   private lazy val _logger: BufferedReader = new BufferedReader(new InputStreamReader(_testErr.get))
   var t = 0 // simulation time
   var delta = 0
-  private val _pokeMap = HashMap[Bits, BigInt]()
-  private val _peekMap = HashMap[Bits, BigInt]()
-  private val _signalMap = HashMap[String, Int]()
+  private val _pokeMap = mutable.HashMap[Bits, BigInt]()
+  private val _peekMap = mutable.HashMap[Bits, BigInt]()
+  private val _signalMap = mutable.HashMap[String, Int]()
   private val _clocks = Driver.clocks map (clk => clk -> clk.period.round.toInt)
-  private val _clockLens = HashMap(_clocks:_*)
-  private val _clockCnts = HashMap(_clocks:_*)
-  val (_inputs: ListSet[Bits], _outputs: ListSet[Bits]) = ListSet(c.wires.unzip._2: _*) partition (_.dir == INPUT)
+  private val _clockLens = mutable.HashMap(_clocks:_*)
+  private val _clockCnts = mutable.HashMap(_clocks:_*)
+  val (_inputs: immutable.ListSet[Bits], _outputs: immutable.ListSet[Bits]) = immutable.ListSet(c.wires.unzip._2: _*) partition (_.dir == INPUT)
   private var isStale = false
-  val _logs = ScalaQueue[String]()
+  val _logs = mutable.Queue[String]()
   def testOutputString = {
-    if(_logs.isEmpty) "" else _logs.dequeue
+    if(_logs.isEmpty) "" else _logs.dequeue()
   }
 
   /** Valid commands to send to the Simulator
@@ -74,8 +75,9 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
    */
   def waitForStreams() = {
     var waited = 0
-    while (_testIn == None || _testOut == None || _testErr == None) {
+    while (_testIn.isEmpty || _testOut.isEmpty|| _testErr.isEmpty) {
       Thread.sleep(100)
+      waited += 1
       if (waited % 10 == 0 && waited > 30) {
         ChiselError.info("waiting for emulator process streams to be valid ...")
       }
@@ -84,13 +86,16 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
 
   private def writeln(str: String) {
     _writer write str
-    _writer.newLine
-    _writer.flush
+    _writer.newLine()
+    _writer.flush()
   }
 
   private def dumpLogs = {
     while (_logger.ready) {
-      _logs enqueue _logger.readLine
+      _logger.readLine match {
+        case line:String => println(line)
+//        case _ => _logs.enqueue(_)
+      }
     }
   }
 
@@ -98,8 +103,7 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     Option(_reader.readLine) match {
       case None =>
         dumpLogs
-        while (!_logs.isEmpty)
-          println(testOutputString)
+        _logs foreach println
         throw new RuntimeException("Errors occurred in simulation")
       case Some(ln) => ln
     }
@@ -137,9 +141,9 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     val w = dtype.needWidth()
     dtype match {
       /* Any "signed" node */
-      case _: SInt | _ : Flo | _: Dbl => (if(rv >= (BigInt(1) << w - 1)) (rv - (BigInt(1) << w)) else rv)
+      case _: SInt | _ : Flo | _: Dbl => if(rv >= (BigInt(1) << w - 1)) rv - (BigInt(1) << w) else rv
       /* anything else (i.e., UInt) */
-      case _ => (rv)
+      case _ => rv
     }
   }
 
@@ -172,7 +176,7 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
   /** Peek at the value of some bits
     * @return a BigInt representation of the bits */
   def peek(data: Bits): BigInt = {
-    if (isStale) update
+    if (isStale) update()
     val value = if (data.isTopLevelIO && data.dir == INPUT) _pokeMap(data)
                 else signed_fix(data, _peekMap getOrElse (data, peekNode(data.getNode)))
     if (isTrace) println("  PEEK " + dumpName(data) + " -> " + value.toString(16))
@@ -181,7 +185,7 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
   /** Peek at Aggregate data
     * @return an Array of BigInts representing the data */
   def peek(data: Aggregate): Array[BigInt] = {
-    data.flatten.map(x => x._2) map (peek(_))
+    data.flatten.map(x => x._2) map peek
   }
   /** Interpret data as a single precision float */
   def peek(data: Flo): Float = {
@@ -218,7 +222,7 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     * @param off The offset or index
     */
   def pokeNode(node: Node, v: BigInt, off: Option[Int] = None) {
-    pokePath(dumpName(node) + ((off map ("[" + _ + "]")) getOrElse ""), v, node.needWidth)
+    pokePath(dumpName(node) + ((off map ("[" + _ + "]")) getOrElse ""), v, node.needWidth())
   }
   /** set the value of some memory
     * @param data The memory to write to
@@ -264,12 +268,12 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     poke(data.asInstanceOf[Bits], BigInt(doubleToLongBits(x)))
   }
 
-  private def readOutputs {
-    _peekMap.clear
+  private def readOutputs(): Unit = {
+    _peekMap.clear()
     _outputs foreach (x => _peekMap(x) = try { BigInt(readln, 16) } catch { case e: Throwable => BigInt(0) })
   }
 
-  private def writeInputs {
+  private def writeInputs(): Unit = {
     _inputs foreach (x => writeValue(_pokeMap getOrElse (x, BigInt(0)), x.needWidth()))
   }
 
@@ -279,29 +283,29 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     if (isTrace) println("RESET " + n)
     for (i <- 0 until n) {
       sendCmd(SIM_CMD.RESET)
-      readOutputs
+      readOutputs()
     }
   }
 
-  protected def update {
+  protected def update(): Unit = {
     sendCmd(SIM_CMD.UPDATE)
-    writeInputs
-    readOutputs
+    writeInputs()
+    readOutputs()
     isStale = false
   }
 
   private def calcDelta = {
-    val min = (_clockCnts.values foldLeft Int.MaxValue)(math.min(_, _))
+    val min = (_clockCnts.values foldLeft Int.MaxValue)(math.min)
     _clockCnts.keys foreach (_clockCnts(_) -= min)
     (_clockCnts filter (_._2 == 0)).keys foreach (k => _clockCnts(k) = _clockLens(k)) 
     min
   }
 
-  protected def takeStep {
+  protected def takeStep(): Unit = {
     sendCmd(SIM_CMD.STEP)
-    writeInputs
+    writeInputs()
     delta += calcDelta
-    readOutputs
+    readOutputs()
     dumpLogs
     isStale = false
   }
@@ -314,11 +318,11 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
 
   /** Step time by the smallest amount to the next rising clock edge
     * @note this is defined based on the period of the clock
-    * See [[Chisel.Clock$ Clock]]
+    * See [[Chisel.Clock Clock]]
     */
   def step(n: Int) {
     if (isTrace) println("STEP " + n + " -> " + (t + n))
-    (0 until n) foreach (_ => takeStep)
+    (0 until n) foreach (_ => takeStep())
     t += n
   }
 
@@ -355,7 +359,7 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
 
   /** Expect the value of Aggregate data to be have the values as passed in with the array */
   def expect (data: Aggregate, expected: Array[BigInt]): Boolean = {
-    val kv = (data.flatten.map(x => x._2), expected.reverse).zipped;
+    val kv = (data.flatten.map(x => x._2), expected.reverse).zipped
     var allGood = true
     for ((d, e) <- kv)
       allGood = expect(d, e) && allGood
@@ -414,39 +418,50 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     val n = Driver.appendString(Some(c.name),Driver.chiselConfigClassName)
     val target = Driver.targetDir + "/" + n
     // If the caller has provided a specific command to execute, use it.
-    val cmd = Driver.testCommand match {
-      case Some(cmd) => Driver.targetDir + "/" + cmd
+    val cmd : Seq[String] = Driver.testCommand match {
+      case Some(command) => (Driver.targetDir + "/" + command).split(" ")
       case None => Driver.backend match {
         case b: FloBackend =>
-          val command = ArrayBuffer(b.floDir + "fix-console", ":is-debug", "true", ":filename", target + ".hex", ":flo-filename", target + ".mwe.flo")
-          if (Driver.isVCD) { command ++= ArrayBuffer(":is-vcd-dump", "true") }
-          if (Driver.emitTempNodes) { command ++= ArrayBuffer(":emit-temp-nodes", "true") }
-          command ++= ArrayBuffer(":target-dir", Driver.targetDir)
-          command.mkString(" ")
-        case b: VerilogBackend => target + " -q +vcs+initreg+0 "
-        case _ => target
+          val command = mutable.ArrayBuffer(b.floDir + "fix-console", ":is-debug", "true", ":filename",
+            target + ".hex", ":flo-filename", target + ".mwe.flo")
+          if (Driver.isVCD) { command ++= mutable.ArrayBuffer(":is-vcd-dump", "true") }
+          if (Driver.emitTempNodes) { command ++= mutable.ArrayBuffer(":emit-temp-nodes", "true") }
+          command ++= mutable.ArrayBuffer(":target-dir", Driver.targetDir)
+          command
+        case b: VerilogBackend => b.simulator.target(c, n)
+        case _ => Seq(target)
       }
     }
     println("SEED " + Driver.testerSeed)
-    println("STARTING " + cmd)
+    println("STARTING " + (cmd mkString " "))
     val processBuilder = Process(cmd)
     val pio = new ProcessIO(
       in => _testOut = Option(in), out => _testErr = Option(out), err => _testIn = Option(err))
     val process = processBuilder.run(pio)
     waitForStreams()
     t = 0
-    readOutputs
+    readOutputs()
     reset(5)
     while (_logger.ready) println(_logger.readLine)
     process
   }
 
   /** Complete the simulation and inspect all tests */
-  def finish {
+  def finish(): Unit = {
     sendCmd(SIM_CMD.FIN)
-    _testIn match { case Some(in) => in.close case None => }
-    _testErr match { case Some(err) => err.close case None => }
-    _testOut match { case Some(out) => { out.flush ; out.close } case None => }
+    _testIn match {
+      case Some(in) => in.close()
+      case None =>
+    }
+    _testErr match {
+      case Some(err) => err.close()
+      case None =>
+    }
+    _testOut match { 
+      case Some(out) => out.flush()
+        out.close()
+      case None => 
+    }
     process.destroy()
     println("RAN " + t + " CYCLES " + (if (ok) "PASSED" else "FAILED FIRST AT CYCLE " + failureTime))
     if(!ok) throwException("Module under test FAILED at least one test vector.")
@@ -462,12 +477,12 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
 /** A tester to check a node graph from INPUTs to OUTPUTs directly */
 class MapTester[+T <: Module](c: T, val testNodes: Seq[Node]) extends Tester(c, false) {
   val (ins, outs) = testNodes partition { case b: Bits => b.dir == INPUT case _ => false }
-  def step(svars: HashMap[Node, Node],
-           ovars: HashMap[Node, Node] = HashMap.empty,
+  def step(svars: mutable.HashMap[Node, Node],
+           ovars: mutable.HashMap[Node, Node] = mutable.HashMap.empty,
            isTrace: Boolean = true): Boolean = {
     if (isTrace) println("---\nINPUTS")
     ins foreach { in =>
-      val value = (svars get in) match { case None => BigInt(0) case Some(v) => v.litValue() }
+      val value = svars get in match { case None => BigInt(0) case Some(v) => v.litValue() }
       in match {
         case io: Bits if io.isTopLevelIO => poke(io, value)
         case _ => pokeNode(in, value)
@@ -481,7 +496,7 @@ class MapTester[+T <: Module](c: T, val testNodes: Seq[Node]) extends Tester(c, 
         case io: Bits if io.isTopLevelIO => peek(io)
         case _ => peekNode(out)
       }
-      (ovars get out) match {
+      ovars get out match {
         case None => 
           ovars(out) = Literal(value)
           if (isTrace) println("  READ " + dumpName(out) + " = " + value)
@@ -489,7 +504,7 @@ class MapTester[+T <: Module](c: T, val testNodes: Seq[Node]) extends Tester(c, 
         case Some(e) =>
           val expected = e.litValue()
           val pass = expected == value
-          if (isTrace) println("  EXPECTED %s: %x == %x -> %s".format(value, expected, if (pass) "PASS" else "FAIL"))
+          if (isTrace) println("  EXPECTED %s: %x == %x -> %s".format(e.name, value, expected, if (pass) "PASS" else "FAIL"))
           pass
       }
     }

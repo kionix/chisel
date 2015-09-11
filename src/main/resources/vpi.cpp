@@ -6,37 +6,37 @@ vpi_api_t vpi_api;
                  User Functions
 =============================================================================*/
 
-PLI_INT32 init_clks_calltf(PLI_BYTE8 *user_data) {
+PLI_INT32 init_clks_calltf(PLI_BYTE8* /*user_data*/) {
   vpi_api.init_clks();
   return 0;
 }
 
-PLI_INT32 init_rsts_calltf(PLI_BYTE8 *user_data) {
+PLI_INT32 init_rsts_calltf(PLI_BYTE8* /*user_data*/) {
   vpi_api.init_rsts();
   return 0;
 }
 
-PLI_INT32 init_ins_calltf(PLI_BYTE8 *user_data) {
+PLI_INT32 init_ins_calltf(PLI_BYTE8* /*user_data*/) {
   vpi_api.init_ins();
   return 0;
 }
 
-PLI_INT32 init_outs_calltf(PLI_BYTE8 *user_data) {
+PLI_INT32 init_outs_calltf(PLI_BYTE8* /*user_data*/) {
   vpi_api.init_outs();
   return 0;
 }
 
-PLI_INT32 init_sigs_calltf(PLI_BYTE8 *user_data) {
+PLI_INT32 init_sigs_calltf(PLI_BYTE8* /*user_data*/) {
   vpi_api.init_sigs();
   return 0;
 }
 
-PLI_INT32 tick_calltf(PLI_BYTE8 *user_data) {
+PLI_INT32 tick_calltf(PLI_BYTE8* /*user_data*/) {
   vpi_api.tick();
   return 0;
 }
 
-PLI_INT32 tick_cb(p_cb_data cb_data) {
+PLI_INT32 tick_cb(p_cb_data /*cb_data*/) {
   vpi_api.tick();
   return 0;
 }
