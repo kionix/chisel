@@ -60,8 +60,9 @@ lazy val chiselBuildSettings = Seq (
      */
     libraryDependencies += "com.novocode" % "junit-interface" % "0.10" % "test",
     libraryDependencies += "org.scalatest" %% "scalatest" % "2.2.4" % "test",
-    libraryDependencies += "com.typesafe.play" %% "twirl-api" % "1.1.1",
     libraryDependencies <+= (scalaVersion)("org.scala-lang" % "scala-reflect" % _),
+    libraryDependencies += "com.gilt" %% "handlebars-scala" % "2.0.1",
+
 
     // Execute tests in the current project serially.
     // Tests from other projects may still run concurrently.
@@ -72,10 +73,8 @@ lazy val chiselBuildSettings = Seq (
     }
  )
 
+
 lazy val chisel = (project in file(".")).
-  enablePlugins(play.twirl.sbt.SbtTwirl).
   settings(chiselBuildSettings: _*)
 
-TwirlKeys.templateFormats += ("cpp" -> "Chisel.CppFormat")
-TwirlKeys.templateFormats += ("v" -> "play.twirl.api.TxtFormat")
-TwirlKeys.templateImports += "Chisel._"
+

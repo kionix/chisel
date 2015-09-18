@@ -45,13 +45,49 @@ public:
   virtual std::string toHex() = 0;
 };
 
+/**************************************************************************
+ * Helper c++ templates
+ * From: https://mxr.mozilla.org/mozilla-central/source/mfbt/TemplateLib.h
+ * License: http://mozilla.org/MPL/2.0/
+ **************************************************************************/
+
+/** Compute the number of bits in the given unsigned type. */
+template<typename T>
+struct BitSize
+{
+  static const size_t value = sizeof(T) * CHAR_BIT;
+};
+
+/**
+ * Produce an N-bit mask, where N <= BitSize<size_t>::value.  Handle the
+ * language-undefined edge case when N = BitSize<size_t>::value.
+ */
+template<size_t N>
+struct NBitMask
+{
+  // Assert the precondition.  On success this evaluates to 0.  Otherwise it
+  // triggers divide-by-zero at compile time: a guaranteed compile error in
+  // C++11, and usually one in C++98.  Add this value to |value| to assure
+  // its computation.
+  static const size_t checkPrecondition =
+    0 / size_t(N < BitSize<size_t>::value);
+  static const size_t value = (size_t(1) << N) - 1 + checkPrecondition;
+};
+template<>
+struct NBitMask<BitSize<size_t>::value>
+{
+  static const size_t value = size_t(-1);
+};
+
+/***************************************************************************/
+
 template<size_t N>
 class vl_type : public vl_type_ {
   typename vl_base_type<N>::t& v;
 public:
   vl_type(typename vl_base_type<N>::t& variable, size_t bits, const std::string& name): v(variable), vl_type_(bits, name) {}
   virtual void operator=(const std::string &hexString) {
-    v = ((size_t(1) << N) - 1) & std::stoull(hexString, nullptr, 16);
+    v = NBitMask<N>::value & std::stoull(hexString, nullptr, 16);
   }
 
   virtual std::string toHex() {

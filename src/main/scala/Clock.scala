@@ -41,7 +41,7 @@ object Clock {
     new Clock(reset, src, period)
   }
 
-  implicit def toOption(c: Clock) = Option(c)
+  implicit def toOption(c: Clock): Option[Clock] = Option(c)
 }
 
 /** Create a new clock
@@ -56,7 +56,7 @@ class Clock(reset: Bool = Driver.implicitReset,
 
   /** @return a reset pin connected to reset for the component in scope */
   def getReset: Bool = {
-    if (!Driver.compStack.isEmpty) {
+    if (Driver.compStack.nonEmpty) {
       Driver.compStack.top.addResetPin(reset)
     } else {
       reset

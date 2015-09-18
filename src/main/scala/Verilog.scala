@@ -30,11 +30,16 @@
 
 package Chisel
 
-import java.io.FileWriter
+import com.gilt.handlebars.scala.Handlebars
+import com.gilt.handlebars.scala.binding.dynamic._
+
+import scala.collection.mutable
 import scala.sys.process._
-import scala.collection.{immutable, mutable}
+
 
 object VerilogBackend {
+  case class Clk(name: String, period: Double, srcClock: Option[Clk])
+  case class Port(name: String, width: Int = 1)
   val keywords = Set[String](
     "always", "and", "assign", "attribute", "begin", "buf", "bufif0", "bufif1",
     "case", "casex", "casez", "cmos", "deassign", "default", "defparam",
@@ -56,7 +61,7 @@ object VerilogBackend {
 
 abstract class Simulator extends FileSystemUtilities {
   def compile (c: Module, n: String, flags: Option[String]): Unit
-  def vcdHarness(modName:String , harness: FileWriter, indent: Int, isMem: Boolean): Unit
+  def vcdHarness(modName:String , isMem: Boolean): Seq[String]
   def target(c:Module, n: String): Seq[String]
 
   def moduleSources(n: String) = Seq(n + ".v", n + "-harness.v")
@@ -91,15 +96,10 @@ class IVerilog extends Simulator{
 //    new java.io.File(exeName).setExecutable(true)
   }
 
-  def vcdHarness(modName:String , harness: FileWriter, indent: Int, isMem: Boolean): Unit = {
-    val i = " " * indent
-    harness write i + "/*** VCD dump ***/\n"
-    harness write i + "$dumpfile(\"%s.vcd\");\n".format(dir + modName)
-    harness write i + "$dumpvars(0);\n"
-    if (isMem)
-      harness write  i + "/*$dumpmem();///???*/\n" // TODO find a way to dump memory in iverilog
+  def vcdHarness(modName:String , isMem: Boolean) = {
+    Seq("/*** VCD dump ***/", "$dumpfile(\"%s.vcd\");".format(dir + modName), "$dumpvars(0);") ++
+      Seq(if (isMem) "/*$dumpmem();///???*/" else "")
   }
-
 
   def target(c:Module, n: String) =  Seq("vvp", s"-M$dir", s"$dir$n.vvp")
 }
@@ -107,7 +107,7 @@ class IVerilog extends Simulator{
 /**
  *  support for Mentor Graphics Modelsim and Questasim
  *  MGC_HOME environment variable should point to installation folder
- *  and $MGC_HOME/bin should be in PATH
+ *  and $$MGC_HOME/bin should be in PATH
  */
 
 class Modelsim extends Simulator{
@@ -126,13 +126,9 @@ class Modelsim extends Simulator{
     if (!run(cmd)) throwException(s"$cmd FAILED!")
   }
 
-  def vcdHarness(modName:String , harness: FileWriter, indent: Int, isMem: Boolean): Unit = {
-    val i = " " * indent
-    harness write i + "/*** VCD dump ***/\n"
-    harness write i + "$fdumpfile(\"%s.vcd\");\n".format(dir + modName)
-    harness write i + "$dumpvars(0);\n"
-    if (isMem)
-      harness write  i + "/*$dumpmem();///???*/\n" // TODO
+  def vcdHarness(modName:String, isMem: Boolean) = {
+    Seq( "/*** VCD dump ***/", "$fdumpfile(\"%s.vcd\");".format(dir + modName), "$dumpvars(0);") ++
+      Seq(if (isMem) "/*$dumpmem();///???*/" else "") // TODO
   }
 
 
@@ -154,13 +150,9 @@ class Verilator extends Simulator{
     if (!run(makeCmd)) throwException(s"failed to run $cmd for $n")
   }
 
-  def vcdHarness(modName:String , harness: FileWriter, indent: Int, isMem: Boolean): Unit = {
-    val i = " " * indent
-    harness write i + "/*** VCD dump ***/\n"
-    harness write i + "$dumpfile(\"%s.vcd\");\n".format(dir + modName)
-    harness write i + "$dumpvars(0);\n"
-    if (isMem)
-      harness write  i + "/*$dumpmem();///???*/\n" // TODO find a way to dump memory in iverilog
+  def vcdHarness(modName:String , isMem: Boolean) = {
+    Seq("/*** VCD dump ***/", "$dumpfile(\"%s.vcd\");".format(dir + modName), "$dumpvars(0);") ++
+      Seq(if (isMem) "/*$dumpmem();///???*/" else "") // TODO find a way to dump memory in iverilog
   }
 
 
@@ -180,13 +172,9 @@ class Vcs extends  Simulator {
     if (!run(cmd)) throw new RuntimeException("vcs command failed")
   }
 
-  def vcdHarness(modName:String , harness: FileWriter, indent: Int, isMem: Boolean): Unit = {
-    val i = " " * indent
-    harness write i + "/*** VPD dump ***/\n"
-    harness write i + "$vcdplusfile(\"%s.vpd\");\n".format(dir + modName)
-    harness write i + "$vcdpluson(0);\n"
-    if(isMem)
-      harness write i + "$vcdplusmemon;\n"
+  def vcdHarness(modName:String, isMem: Boolean) = {
+    Seq("/*** VPD dump ***/", "$vcdplusfile(\"%s.vpd\");".format(dir + modName), "$vcdpluson(0);") ++
+    Seq(if(isMem) "$vcdplusmemon;" else "")
   }
 
   def target(c:Module, n: String) = Seq(dir + n, "-q", "+vcs+initreg+0")
@@ -207,7 +195,7 @@ class VerilogBackend(simulatorName: String = "vcs", verilogExtraSources: List[St
     case "vcs" => new Vcs
     case "iverilog" => new IVerilog
     case "verilator" => new Verilator
-    case "modelsim"|"questasim" => new Modelsim
+    case "modelsim" | "questasim" => new Modelsim
     case _ => Class.forName("Chisel."+simulatorName).newInstance.asInstanceOf[Simulator]
   }
 
@@ -502,86 +490,6 @@ class VerilogBackend(simulatorName: String = "vcs", verilogExtraSources: List[St
       ""
   }
 
-  def genHarness(c: Module, name: String) {
-    val harness  = createOutputFile(name + "-harness.v")
-    val ins = for ((n, io) <- c.wires if io.dir == INPUT) yield io
-    val outs = for ((n, io) <- c.wires if io.dir == OUTPUT) yield io
-    val mainClk = Driver.implicitClock
-    val clocks = Driver.clocks
-    val resets = c.resets.values.toList
-
-    harness write "module test;\n"
-    ins foreach (node => harness write "  reg[%d:0] %s = 0;\n".format(node.needWidth()-1, emitRef(node))) 
-    outs foreach (node => harness write "  wire[%d:0] %s;\n".format(node.needWidth()-1, emitRef(node))) 
-    clocks foreach (clk => harness write "  reg %s = 0;\n".format(clk.name)) 
-    resets foreach (rst => harness write "  reg %s = 1;\n".format(rst.name))
-    clocks foreach (clk => harness write "  integer %s_len;\n".format(clk.name)) 
-    clocks foreach (clk => harness write "  always #%s_len %s = ~%s;\n".format(clk.name, clk.name, clk.name)) 
-    if (clocks.size > 1) {
-      harness write "  integer min = 1 << 31 - 1;\n\n"
-      clocks foreach (clk => harness write "  integer %s_cnt;\n".format(clk.name)) 
-    }
-
-    harness write "\n  /*** DUT instantiation ***/\n"
-    harness write "  %s %s(\n".format(c.moduleName, c.name)
-    c.clocks foreach (clk => harness write "    .%s(%s),\n".format(clk.name, clk.name)) 
-    resets   foreach (rst => harness write "    .%s(%s),\n".format(rst.name, rst.name)) 
-    
-    harness write ((ins ++ outs) map (node => "    .%s(%s)".format(emitRef(node), emitRef(node))) mkString ",\n")
-    harness write ");\n\n"
-
-    harness write "  initial begin\n"
-    clocks foreach (clk => clk.srcClock match {
-      case None => harness write "    %s_len = `CLOCK_PERIOD;\n".format(clk.name)
-      case Some(src) =>
-        val initStr = "%s_len".format(src.name) + (if (src.period > clk.period)
-          " / " + (src.period / clk.period).round else
-          " * " + (clk.period / src.period).round)
-        harness write "    %s_len = %s;\n".format(clk.name, initStr)
-    })
-    if (clocks.size > 1) clocks foreach (clk => harness write "    %s_cnt = %s_len;\n".format(clk.name, clk.name)) 
-    harness write "    $init_clks(" + (clocks map (_.name + "_len") mkString ", ") + ");\n"
-    harness write "    $init_rsts(" + (resets map (_.name) mkString ", ") + ");\n"
-    harness write "    $init_ins(" + (ins map (emitRef(_)) mkString ", ") + ");\n"
-    harness write "    $init_outs(" + (outs map (emitRef(_)) mkString ", ") + ");\n"
-    harness write "    $init_sigs(%s);\n".format(c.name)
-
-    if (Driver.isVCD)
-      simulator.vcdHarness(modName = c.name, harness = harness, indent = 4, isMem = Driver.isVCDMem)
-    harness write "  end\n\n"
-
-    if (clocks.size > 1) {
-      harness write "  initial forever begin\n"
-      clocks foreach (clk => harness write "    if (%s_cnt < min) min = %s_cnt;\n".format(clk.name, clk.name))   
-      clocks foreach (clk => harness write "    %s_cnt = %s_cnt - min;\n".format(clk.name, clk.name))
-      clocks foreach (clk => harness write "    if (%s_cnt == 0) %s_cnt = %s_len;\n".format(clk.name, clk.name, clk.name))
-      harness write "    #min $tick();\n"
-      harness write "    #min ;\n"    
-      harness write "  end\n"
-    } else {
-      harness write "  always @(negedge %s) begin\n".format(mainClk.name)
-      harness write "    $tick();\n"
-      harness write "  end\n\n"
-    }
-    harness write "endmodule\n"
-
-    harness.close()
-  }
-
-  def genCppHarness(c: Module, name: String) {
-
-    val harness  = createOutputFile(name + "-harness.cpp")
-
-    val ins = for ((n, io) <- c.wires if io.dir == INPUT) yield (emitRef(io), io.getWidth())
-    val outs = for ((n, io) <- c.wires if io.dir == OUTPUT) yield (emitRef(io), io.getWidth())
-    val mainClk = Driver.implicitClock.name
-    val clocks = Driver.clocks.map(_.name).toArray
-    val resets = c.resets.values.map(_.name).toArray
-
-    harness write cpp.CppHarness(c.moduleName, ins, outs, mainClk, clocks, resets, Driver.isVCD).toString()
-    harness.close()
-  }
-
   // Is the specified node synthesizeable?
   // This could be expanded. For the moment, we're flagging unconnected Bits,
   // for which we generate un-synthesizable random values.
@@ -654,7 +562,6 @@ class VerilogBackend(simulatorName: String = "vcs", verilogExtraSources: List[St
   }
 
   def emitPrintf(p: Printf): String = {
-//    val file = if (Driver.isGenHarness) "32'h80000001" else "32'h80000002"
     val file = if (Driver.isGenHarness) "32'h80000001" else "32'h80000002"
     (List(if_not_synthesis,
     "`ifdef PRINTF_COND\n",
@@ -666,7 +573,6 @@ class VerilogBackend(simulatorName: String = "vcs", verilogExtraSources: List[St
     endif_not_synthesis) addString new StringBuilder).result()
   }
   def emitAssert(a: Assert): String = {
-//    val file = if (Driver.isGenHarness) "32'h80000001" else "32'h80000002"
     val file = if (Driver.isGenHarness) "32'h80000001" else "32'h80000002"
     (List(if_not_synthesis,
       s"      fd = $file;\n",
@@ -859,28 +765,64 @@ class VerilogBackend(simulatorName: String = "vcs", verilogExtraSources: List[St
     nameBindings
     findConsumers(c)
 
-    val n = Driver.appendString(Some(c.name),Driver.chiselConfigClassName)
+    val n = Driver.appendString(Some(c.name), Driver.chiselConfigClassName)
     val out = createOutputFile(n + ".v")
     doCompile(c, out, 0)
     ChiselError.checkpoint()
     out.close()
+
+    def portsMap(io: Bits) = Map(
+      "name" -> emitRef(io),
+      "width" -> io.needWidth(),
+      "msb" -> (io.needWidth() - 1) )
+
+    val io = c.wires.map(_._2).toSeq groupBy (_.dir)
+
+    def mkPortList[T](l: Seq[T], portsMap: T => Map[String, Any] = identity[Map[String, Any]] _): Seq[Map[String, Any]] =
+      l.init.map(portsMap) :+ (portsMap(l.last) + ("last" -> true))
+
+    object templData {
+      val m = Map("moduleName" -> c.moduleName, "name" -> c.name)
+      val ins = mkPortList(io(INPUT), portsMap)
+      val outs = mkPortList(io(OUTPUT), portsMap)
+      val mainClk = Driver.implicitClock.name
+      val clocks = mkPortList(Driver.clocks.map(clk => Map("name" -> clk.name, "period" -> (
+        clk.srcClock match {
+          case None => "`CLOCK_PERIOD"
+          case Some(src) => s"${src.name}_len ${if (src.period > clk.period)
+              " / " + (src.period / clk.period).round else
+              " * " + (clk.period / src.period).round}"
+        })
+      )))
+      val driver = Map("targetDir" -> Driver.targetDir) ++ (if(Driver.isVCD) Map("vcd" -> simulator.vcdHarness(c.moduleName, Driver.isVCDMem)) else Map())
+      val resets = mkPortList(c.resets.values.toSeq.map(r => Map("name" -> r.name)))
+    }
 
     if (memConfs.nonEmpty) {
       val out_conf = createOutputFile(n + ".conf")
       out_conf.write(getMemConfString)
       out_conf.close()
     }
+
     if (Driver.isGenHarness) {
-      if(simulatorName == "verilator") {
-        genCppHarness(c, n)
-        copyToTarget("vl.h")
-      }
-      else
-        genHarness(c, n)
+      val template = getClass.getResource (
+        simulatorName match {
+          case "verilator" =>
+            copyToTarget("vl.h")
+            "/CppHarness.handlebars.cpp"
+          case _ =>
+            copyToTarget("vpi.h")
+            copyToTarget("vpi.cpp")
+            "/VerilogHarness.handlebars.v"
+        }).getFile
+
+      val t = Handlebars(new java.io.File(template))
+      val harness = createOutputFile(n + "-harness" + template.substring(template.lastIndexOf('.')))
+      harness write t(templData)
+      harness.close()
       copyToTarget("sim_api.h")
-      copyToTarget("vpi.h")
-      copyToTarget("vpi.cpp")
     }
+
   }
 
   override def compile(c: Module, flags: Option[String]) {
@@ -891,4 +833,3 @@ class VerilogBackend(simulatorName: String = "vcs", verilogExtraSources: List[St
   private def if_not_synthesis = "`ifndef SYNTHESIS\n// synthesis translate_off\n"
   private def endif_not_synthesis = "// synthesis translate_on\n`endif\n"
 }
-

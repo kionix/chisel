@@ -17,6 +17,7 @@ public:
     value_s.format = vpiHexStrVal;
     value_s.value.str = (PLI_BYTE8 *) value.c_str();
     vpi_put_value(sig, &value_s, NULL, vpiNoDelay);
+    return true;
   }
 
   virtual std::string get_value() {
