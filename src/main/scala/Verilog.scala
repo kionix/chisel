@@ -32,14 +32,11 @@ package Chisel
 
 import com.gilt.handlebars.scala.Handlebars
 import com.gilt.handlebars.scala.binding.dynamic._
-
 import scala.collection.mutable
 import scala.sys.process._
 
 
 object VerilogBackend {
-  case class Clk(name: String, period: Double, srcClock: Option[Clk])
-  case class Port(name: String, width: Int = 1)
   val keywords = Set[String](
     "always", "and", "assign", "attribute", "begin", "buf", "bufif0", "bufif1",
     "case", "casex", "casez", "cmos", "deassign", "default", "defparam",
@@ -429,7 +426,7 @@ class VerilogBackend(simulatorName: String = "vcs", verilogExtraSources: List[St
         "  endcase\n") addString new StringBuilder).result()
 
       case s: Sprintf =>
-        List("  always @(*) $sformat(", emitTmp(s), ", ", (CString(s.format) +: (s.args map (emitRef _))) mkString ", ", ");\n").mkString
+        List("  always @(*) $sformat(", emitTmp(s), ", ", (CString(s.format) +: (s.args map emitRef)) mkString ", ", ");\n").mkString
 
       case _ =>
         ""
@@ -644,9 +641,9 @@ class VerilogBackend(simulatorName: String = "vcs", verilogExtraSources: List[St
       val prune = if (io.prune && c != topMod) "//" else ""
       io.dir match {
         case INPUT =>
-          ports += List("    ", prune, "input ", emitWidth(io), " ", emitRef(io)) addString (new StringBuilder)
+          ports += List("    ", prune, "input ", emitWidth(io), " ", emitRef(io)) addString new StringBuilder
         case OUTPUT =>
-          ports += List("    ", prune, "output", emitWidth(io), " ", emitRef(io)) addString (new StringBuilder)
+          ports += List("    ", prune, "output", emitWidth(io), " ", emitRef(io)) addString new StringBuilder
       }
     }
     val uncommentedPorts = ports.filter(!_.result().contains("//"))
@@ -778,7 +775,8 @@ class VerilogBackend(simulatorName: String = "vcs", verilogExtraSources: List[St
 
     val io = c.wires.map(_._2).toSeq groupBy (_.dir)
 
-    def mkPortList[T](l: Seq[T], portsMap: T => Map[String, Any] = identity[Map[String, Any]] _): Seq[Map[String, Any]] =
+    type StringMap = Map[String, Any]
+    def mkPortList[T](l: Seq[T], portsMap: T => StringMap = identity[StringMap] _): Seq[StringMap] =
       l.init.map(portsMap) :+ (portsMap(l.last) + ("last" -> true))
 
     object templData {
@@ -794,7 +792,8 @@ class VerilogBackend(simulatorName: String = "vcs", verilogExtraSources: List[St
               " * " + (clk.period / src.period).round}"
         })
       )))
-      val driver = Map("targetDir" -> Driver.targetDir) ++ (if(Driver.isVCD) Map("vcd" -> simulator.vcdHarness(c.moduleName, Driver.isVCDMem)) else Map())
+      val driver = Map("targetDir" -> Driver.targetDir) ++
+        (if(Driver.isVCD) Map("vcd" -> simulator.vcdHarness(c.moduleName, Driver.isVCDMem)) else Map())
       val resets = mkPortList(c.resets.values.toSeq.map(r => Map("name" -> r.name)))
     }
 
