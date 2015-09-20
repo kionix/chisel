@@ -178,12 +178,13 @@ class SFix(exp: Int, raw: SInt) extends Fix[SInt,SFix](exp, raw) with Num[SFix] 
   def %  (b: SFix): SFix = throwException("% unavailable for UFix")
 }
 
+@deprecated("Use [[Chisel.Fixed Fixed]] instead", "3")
 object QR {
   def genSFix(int: Int, frac: Int) = SFix(int, int+frac)
   def genUFix(int: Int, frac: Int) = UFix(int, int+frac)
 }
 
-
+@deprecated("Use [[Chisel.Fixed Fixed]] instead", "3")
 class Toy extends Module {
   val io = new Bundle {
     val in0 = SFix(2, 4).asInput
@@ -199,6 +200,7 @@ class Toy extends Module {
   io.oraw := int_result.raw
 }
 
+@deprecated("Use [[Chisel.Fixed Fixed]] instead", "3")
 class ToyTester(dut: Toy) extends AdvTester.AdvTester(dut) {
   poke(dut.io.in0.raw, BigInt(16-2))
   poke(dut.io.in1.raw, BigInt(5))

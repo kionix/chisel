@@ -29,8 +29,8 @@
 */
 
 package Chisel
-import scala.collection.mutable.{ArrayBuffer, HashMap, Queue => ScalaQueue}
-import scala.collection.immutable.ListSet
+import scala.collection.mutable
+import scala.collection.immutable
 import scala.util.Random
 import java.io._
 import java.lang.Double.{longBitsToDouble, doubleToLongBits}
@@ -125,7 +125,7 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     _writer.flush()
   }
 
-  private def dumpLogs = {
+  private def dumpLogs(): Unit = {
     while (_logger.ready) {
       _logger.readLine match {
         case line:String => println(line)
@@ -137,7 +137,7 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
   private def readln: String = {
     Option(_reader.readLine) match {
       case None =>
-        dumpLogs
+        dumpLogs()
         _logs foreach println
         throw new RuntimeException("Errors occurred in simulation")
       case Some(ln) => ln
@@ -198,7 +198,7 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
   /** Peek at the value of some memory at an index
     * @param data Memory to inspect
     * @param off Offset in memory to look at */
-  def peekAt[T <: Bits](data: Mem[T], off: Int): BigInt = {
+  def peekAt[TT <: Bits](data: Mem[TT], off: Int): BigInt = {
     val value = peekNode(data, Some(off))
     if (isTrace) println("  PEEK %s[%d] -> %s".format(dumpName(data), off, value.toString(16)))
     value
@@ -247,14 +247,14 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     * @param off The offset or index
     */
   def pokeNode(node: Node, v: BigInt, off: Option[Int] = None) {
-    pokePath(dumpName(node) + ((off map ("[" + _ + "]")) getOrElse ""), v, node.needWidth())
+    pokePath(dumpName(node) + ((off map ("[" + _ + "]")) getOrElse ""), v)
   }
   /** set the value of some memory
     * @param data The memory to write to
     * @param value The BigInt representing the bits to set
     * @param off The offset representing the index to write to memory
     */
-  def pokeAt[T <: Bits](data: Mem[T], value: BigInt, off: Int): Unit = {
+  def pokeAt[TT <: Bits](data: Mem[TT], value: BigInt, off: Int): Unit = {
     if (isTrace) println("  POKE %s[%d] <- %s".format(dumpName(data), off, value.toString(16)))
     pokeNode(data, value, Some(off))
   }
@@ -303,7 +303,7 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
   }
 
   private def writeInputs(): Unit = {
-    _inputs foreach (x => writeValue(_pokeMap getOrElse (x, BigInt(0)), x.needWidth()))
+    _inputs foreach (x => writeValue(_pokeMap getOrElse (x, BigInt(0))))
   }
 
   /** Send reset to the hardware
@@ -335,7 +335,7 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     writeInputs()
     delta += calcDelta
     readOutputs()
-    dumpLogs
+    dumpLogs()
     isStale = false
   }
 
@@ -428,7 +428,7 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
   def expect (data: Bits, expected: Float): Boolean = {
     val gotBits = peek(data).toInt
     val expectedBits = java.lang.Float.floatToIntBits(expected)
-    var gotFLoat = java.lang.Float.intBitsToFloat(gotBits)
+    val gotFLoat = java.lang.Float.intBitsToFloat(gotBits)
     var expectedFloat = expected
     if (gotFLoat != expectedFloat) {
       val gotDiff = gotBits - expectedBits
@@ -448,13 +448,13 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     val target = Driver.targetDir + "/" + n
     // If the caller has provided a specific command to execute, use it.
     val cmd = Driver.testCommand match {
-      case Some(cmd) => Driver.targetDir + "/" + cmd
+      case Some(command) => Driver.targetDir + "/" + command
       case None => Driver.backend match {
         case b: FloBackend =>
-          val command = ArrayBuffer(b.floDir + "fix-console", ":is-debug", "true", ":filename", target + ".hex", ":flo-filename", target + ".mwe.flo")
-          if (Driver.isVCD) { command ++= ArrayBuffer(":is-vcd-dump", "true") }
-          if (Driver.emitTempNodes) { command ++= ArrayBuffer(":emit-temp-nodes", "true") }
-          command ++= ArrayBuffer(":target-dir", Driver.targetDir)
+          val command = mutable.ArrayBuffer(b.floDir + "fix-console", ":is-debug", "true", ":filename", target + ".hex", ":flo-filename", target + ".mwe.flo")
+          if (Driver.isVCD) { command ++= mutable.ArrayBuffer(":is-vcd-dump", "true") }
+          if (Driver.emitTempNodes) { command ++= mutable.ArrayBuffer(":emit-temp-nodes", "true") }
+          command ++= mutable.ArrayBuffer(":target-dir", Driver.targetDir)
           command.mkString(" ")
         case b: VerilogBackend => target + " -q +vcs+initreg+0 "
         case _ => target
@@ -468,11 +468,11 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     val process = processBuilder.run(pio)
     waitForStreams()
     t = 0
-    readOutputs
+    readOutputs()
     // reset(5)
     for (i <- 0 until 5) {
       sendCmd(SIM_CMD.RESET)
-      readOutputs
+      readOutputs()
     }
     while (_logger.ready) println(_logger.readLine)
     process
