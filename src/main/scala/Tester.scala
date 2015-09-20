@@ -29,14 +29,49 @@
 */
 
 package Chisel
-
-import scala.collection.mutable
-import scala.collection.immutable
+import scala.collection.mutable.{ArrayBuffer, HashMap, Queue => ScalaQueue}
+import scala.collection.immutable.ListSet
 import scala.util.Random
 import java.io._
 import java.lang.Double.{longBitsToDouble, doubleToLongBits}
 import java.lang.Float.{intBitsToFloat, floatToIntBits}
 import scala.sys.process.{Process, ProcessIO}
+
+// Provides a template to define tester transactions
+trait Tests {
+  def t: Int 
+  def delta: Int 
+  def rnd: Random
+  def setClocks(clocks: Iterable[(Clock, Int)]): Unit
+  def peek(data: Bits): BigInt
+  def peek(data: Aggregate): Array[BigInt]
+  def peek(data: Flo): Float
+  def peek(data: Dbl): Double
+  def peekAt[T <: Bits](data: Mem[T], off: Int): BigInt
+  def poke(data: Bits, x: Boolean): Unit
+  def poke(data: Bits, x: Int): Unit
+  def poke(data: Bits, x: Long): Unit
+  def poke(data: Bits, x: BigInt): Unit
+  def poke(data: Aggregate, x: Array[BigInt]): Unit
+  def poke(data: Flo, x: Float): Unit 
+  def poke(data: Dbl, x: Double): Unit
+  def pokeAt[T <: Bits](data: Mem[T], value: BigInt, off: Int): Unit
+  def reset(n: Int = 1): Unit
+  def step(n: Int): Unit
+  def int(x: Boolean): BigInt 
+  def int(x: Int):     BigInt 
+  def int(x: Long):    BigInt 
+  def int(x: Bits):    BigInt 
+  def expect (good: Boolean, msg: String): Boolean
+  def expect (data: Bits, expected: BigInt): Boolean
+  def expect (data: Aggregate, expected: Array[BigInt]): Boolean
+  def expect (data: Bits, expected: Int): Boolean
+  def expect (data: Bits, expected: Long): Boolean
+  def expect (data: Flo, expected: Float): Boolean
+  def expect (data: Dbl, expected: Double): Boolean
+  def testOutputString: String
+  def run(s: String): Boolean
+}
 
 /** This class is the super class for test cases
   * @param c The module under test
@@ -113,11 +148,8 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     writeln(cmd.id.toString)
   }
 
-  private val writeMask = int(-1L) 
-  private def writeValue(v: BigInt, w: Int = 1) {
-    for (i <- ((w - 1) >> 6) to 0 by -1) {
-      writeln(((v >> (64 * i)) & writeMask).toString(16))
-    }
+  private def writeValue(v: BigInt) {
+    writeln(v.toString(16))
   }
 
   def dumpName(data: Node): String = Driver.backend match {
@@ -147,9 +179,7 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     }
   }
 
-  /** @param id the unique id of a node
-    * @return the current value of the node with the id */
-  def peek(id: Int) = {
+  private def peek(id: Int) = {
     sendCmd(SIM_CMD.PEEK)
     writeln(id.toString)
     try { BigInt(readln, 16) } catch { case e: Throwable => BigInt(0) }
@@ -177,8 +207,10 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     * @return a BigInt representation of the bits */
   def peek(data: Bits): BigInt = {
     if (isStale) update()
-    val value = if (data.isTopLevelIO && data.dir == INPUT) _pokeMap(data)
-                else signed_fix(data, _peekMap getOrElse (data, peekNode(data.getNode)))
+    val value = 
+      if (data.isLit) data.litValue()
+      else if (data.isTopLevelIO && data.dir == INPUT) _pokeMap(data)
+      else signed_fix(data, _peekMap getOrElse (data, peekNode(data.getNode)))
     if (isTrace) println("  PEEK " + dumpName(data) + " -> " + value.toString(16))
     value
   }
@@ -196,25 +228,18 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     longBitsToDouble(peek(data.asInstanceOf[Bits]).toLong)
   }
 
-  /** set the value of a node with unique 'id'
-    * @param id The unique id of the node to set
-    * @param v The BigInt representing the bits to set
-    * @param w The number of 64 bit chunks to write, default is 1
-    * @example {{{ poke(id, BigInt(63) << 60, 2) }}}
-    */
-  def poke(id: Int, v: BigInt, w: Int = 1) {
+  private def poke(id: Int, v: BigInt) { 
     sendCmd(SIM_CMD.POKE)
     writeln(id.toString)
-    writeValue(v, w)
+    writeValue(v)
   }
   /** set the value of a node with its path
     * @param path The unique path of the node to set
     * @param v The BigInt representing the bits to set
-    * @param w The number of 64 bit chunks to write, default is 1
     * @example {{{ poke(path, BigInt(63) << 60, 2) }}}
     */
-  def pokePath(path: String, v: BigInt, w: Int = 1) {
-    poke(_signalMap getOrElseUpdate (path, getId(path)), v, w)
+  def pokePath(path: String, v: BigInt) { 
+    poke(_signalMap getOrElseUpdate (path, getId(path)), v)
   }
   /** set the value of a node
     * @param node The node to set
@@ -245,14 +270,18 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
       val cnt = (data.needWidth() - 1) >> 6
       ((0 to cnt) foldLeft BigInt(0))((res, i) => res | (int((x >> (64 * i)).toLong) << (64 * i)))
     }
-    if (isTrace) println("  POKE " + dumpName(data) + " <- " + value.toString(16))
-    if (data.isTopLevelIO && data.dir == INPUT)
-      _pokeMap(data) = value
-    else if (data.isTopLevelIO && data.dir == OUTPUT)
-      println("  NOT ALLOWED TO POKE OUTPUT " + dumpName(data))
-    else 
-      pokeNode(data.getNode, value)
-    isStale = true
+    data.getNode match {
+      case _: Delay =>
+        if (isTrace) println("  POKE " + dumpName(data) + " <- " + value.toString(16))
+        pokeNode(data.getNode, value)
+        isStale = true
+      case _ if data.isTopLevelIO && data.dir == INPUT =>
+        if (isTrace) println("  POKE " + dumpName(data) + " <- " + value.toString(16))
+        _pokeMap(data) = value
+        isStale = true
+      case _ =>
+        if (isTrace) println("  NOT ALLOWED POKE " + dumpName(data))
+    }
   }
   /** Set the value of Aggregate data */
   def poke(data: Aggregate, x: Array[BigInt]): Unit = {
@@ -418,30 +447,33 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
     val n = Driver.appendString(Some(c.name),Driver.chiselConfigClassName)
     val target = Driver.targetDir + "/" + n
     // If the caller has provided a specific command to execute, use it.
-    val cmd : Seq[String] = Driver.testCommand match {
-      case Some(command) => (Driver.targetDir + "/" + command).split(" ")
+    val cmd = Driver.testCommand match {
+      case Some(cmd) => Driver.targetDir + "/" + cmd
       case None => Driver.backend match {
         case b: FloBackend =>
-          val command = mutable.ArrayBuffer(b.floDir + "fix-console", ":is-debug", "true", ":filename",
-            target + ".hex", ":flo-filename", target + ".mwe.flo")
-          if (Driver.isVCD) { command ++= mutable.ArrayBuffer(":is-vcd-dump", "true") }
-          if (Driver.emitTempNodes) { command ++= mutable.ArrayBuffer(":emit-temp-nodes", "true") }
-          command ++= mutable.ArrayBuffer(":target-dir", Driver.targetDir)
-          command
-        case b: VerilogBackend => b.simulator.target(c, n)
-        case _ => Seq(target)
+          val command = ArrayBuffer(b.floDir + "fix-console", ":is-debug", "true", ":filename", target + ".hex", ":flo-filename", target + ".mwe.flo")
+          if (Driver.isVCD) { command ++= ArrayBuffer(":is-vcd-dump", "true") }
+          if (Driver.emitTempNodes) { command ++= ArrayBuffer(":emit-temp-nodes", "true") }
+          command ++= ArrayBuffer(":target-dir", Driver.targetDir)
+          command.mkString(" ")
+        case b: VerilogBackend => target + " -q +vcs+initreg+0 "
+        case _ => target
       }
     }
     println("SEED " + Driver.testerSeed)
-    println("STARTING " + (cmd mkString " "))
+    println("STARTING " + cmd)
     val processBuilder = Process(cmd)
     val pio = new ProcessIO(
       in => _testOut = Option(in), out => _testErr = Option(out), err => _testIn = Option(err))
     val process = processBuilder.run(pio)
     waitForStreams()
     t = 0
-    readOutputs()
-    reset(5)
+    readOutputs
+    // reset(5)
+    for (i <- 0 until 5) {
+      sendCmd(SIM_CMD.RESET)
+      readOutputs
+    }
     while (_logger.ready) println(_logger.readLine)
     process
   }
