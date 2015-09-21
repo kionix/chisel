@@ -804,7 +804,7 @@ class VerilogBackend(simulatorName: String = "vcs", verilogExtraSources: List[St
     }
 
     if (Driver.isGenHarness) {
-      val template = getClass.getResource (
+      val template =
         simulatorName match {
           case "verilator" =>
             copyToTarget("vl.h")
@@ -813,9 +813,9 @@ class VerilogBackend(simulatorName: String = "vcs", verilogExtraSources: List[St
             copyToTarget("vpi.h")
             copyToTarget("vpi.cpp")
             "/VerilogHarness.handlebars.v"
-        }).getFile
+        }
 
-      val t = Handlebars(new java.io.File(template))
+      val t = Handlebars(scala.io.Source.fromURL(getClass.getResource(template)).mkString)
       val harness = createOutputFile(n + "-harness" + template.substring(template.lastIndexOf('.')))
       harness write t(templData)
       harness.close()

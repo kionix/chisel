@@ -94,7 +94,8 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
   private val _clocks = Driver.clocks map (clk => clk -> clk.period.round.toInt)
   private val _clockLens = mutable.HashMap(_clocks:_*)
   private val _clockCnts = mutable.HashMap(_clocks:_*)
-  val (_inputs: immutable.ListSet[Bits], _outputs: immutable.ListSet[Bits]) = immutable.ListSet(c.wires.unzip._2: _*) partition (_.dir == INPUT)
+  val (_inputs: immutable.ListSet[Bits], _outputs: immutable.ListSet[Bits]) =
+    immutable.ListSet(c.wires.unzip._2: _*) partition (_.dir == INPUT)
   private var isStale = false
   val _logs = mutable.Queue[String]()
   def testOutputString = {
@@ -445,18 +446,18 @@ class Tester[+T <: Module](c: T, isTrace: Boolean = true) extends FileSystemUtil
   val rnd = new Random(Driver.testerSeed)
   val process: Process = {
     val n = Driver.appendString(Some(c.name),Driver.chiselConfigClassName)
-    val target = Driver.targetDir + "/" + n
+    val target = Seq(Driver.targetDir + "/" + n)
     // If the caller has provided a specific command to execute, use it.
-    val cmd = Driver.testCommand match {
-      case Some(command) => Driver.targetDir + "/" + command
+    val cmd: Seq[String] = Driver.testCommand match {
+      case Some(command) => Seq(Driver.targetDir + "/" + command)
       case None => Driver.backend match {
         case b: FloBackend =>
-          val command = mutable.ArrayBuffer(b.floDir + "fix-console", ":is-debug", "true", ":filename", target + ".hex", ":flo-filename", target + ".mwe.flo")
+          val command = mutable.ArrayBuffer(b.floDir + "fix-console", ":is-debug", "true", ":filename", target + ".hex",
+            ":flo-filename", target + ".mwe.flo")
           if (Driver.isVCD) { command ++= mutable.ArrayBuffer(":is-vcd-dump", "true") }
           if (Driver.emitTempNodes) { command ++= mutable.ArrayBuffer(":emit-temp-nodes", "true") }
           command ++= mutable.ArrayBuffer(":target-dir", Driver.targetDir)
-          command.mkString(" ")
-        case b: VerilogBackend => target + " -q +vcs+initreg+0 "
+        case b: VerilogBackend => b.simulator.target(c, n)
         case _ => target
       }
     }
